@@ -17,6 +17,10 @@ SME introduces two fundamental concepts of "Streaming mode" and "ZA storage" tha
 To understand the "Streaming mode", let us revisit some background about Scalable Vector Extension (SVE).
 The SVE1 and SVE2 introduced the concept of "scalable vector registers". The size of these register or in other words, vector length (VL) can vary between 16B ~ 256B, depending on the hardware vendor. For e.g. Microsoft Azure's Cobalt offering the VL as 16B, Amazon AWS's Graviton3 has 32B while Fujitsu A64FX's Fugaku supercomputer has 64B vector length. During compilation, the VL can be known by querying the OS APIs (JIT) or by specifying the target hardware's VL upfront (AOT). Let us call the VL in SVE1/SVE2 as "non-streaming VL" or NSVL. SME introduces the concept of "streaming mode" where a program can execute in an environment in which the VL can be different than NSVL. The VL in streaming mode is typically referred as Scalable Vector Length or SVL. Since Arm architecture allows SVE1/SVE2/SME features to be available as part of same hardware, it means at one point, a program can be operating on a NSVL, while other times, it can be operating on SVL. There are instructions to turn the streaming mode ON/OFF. To add to the complexity, SME core is a separate unit on a chip (and hence is allowed to have different VL), some SVE1/SVE2/NEON instructions are invalid when the program is running in "Streaming mode". Much care needs to ensure that developer do not have non-streaming code does not get executed when streaming mode is ON.
 
+
+![alt text](image-3.png)
+Image credit: https://www.youtube.com/watch?v=jrniGW_Hzno
+
 The second concept that SME introduces is `ZA storage` which is a 2D matrix of size `N x N`, where `N` is SVL (Note: it is SVL and not NSVL). The instructions to read/write/manipulate the ZA storage needs to be executed in streaming mode. Just like NEON registers or Scalable registers, the contents of ZA storage matrix can be interpreted as 1-byte `B`, 2-bytes half `H`, 4-bytes single `S`, 8-bytes double `D` or 16-bytes quad `Q`.
 
 ### Terminology
@@ -39,6 +43,8 @@ A program is invalid and will have undefined behavior if "streaming instructions
 <i>In both cases, these changes of mode are automatic and it is the compiler’s responsibility to insert the necessary instructions. There are no intrinsics that map directly to SMSTART and SMSTOP.</i>
 
 ![alt text](image-2.png)
+
+![alt text](image-4.png)
 
 ### C++ ACLE
 
@@ -217,3 +223,20 @@ Refer: https://arm-software.github.io/acle/main/acle.html#sme-instruction-intrin
 
 
 
+- SME FEAT_SME_FA64
+
+
+
+various options:
+- `using`
+- `STREAMING_ON` and `STREAMING_OFF` APIs. User can forget to do one thing or other.
+- Similar to FFR where we store the state of SM in GPR and add checks like 
+
+```
+if (rax == 1)
+{
+  throw NotSupportedException();
+}
+non_streaming(); // 
+```
+- Method attributes similar to ACLE, but how many static analyzers user run
