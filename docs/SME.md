@@ -46,65 +46,71 @@ The processor can be in streaming mode or in non-streaming mode. Switching the P
 
 A program is invalid and will have undefined behavior if "streaming instructions" are run in non-streaming mode or vice-versa.
 
-<i>In both cases, these changes of mode are automatic and it is the compiler’s responsibility to insert the necessary instructions. There are no C++ intrinsics that map directly to `SMSTART` and `SMSTOP`.</i>
+
+## C++ ACLE
+
+### Streaming and Non Streaming functions
+
+<i>In C++, changes of mode are automatic based on whether a function is a streaming or non-streaming function. It is the compiler’s responsibility to insert the necessary instructions. There are no C++ intrinsics that map directly to `SMSTART` and `SMSTOP`.</i>
+
+C++ defines function attributes `__arm_streaming` which says that everything in this function should be streaming instructions only and `__arm_streaming_compatible` which says that it only uses the subset of instructions that are valid in both streaming and non-streaming modes. By default (if no attribute is specified), a function is considered to be a non-streaming mode function.
 
 ![alt text](image-2.png)
 
+It is the responsibilty of the caller to ensure the SME state is correct before function entry and then restore prior state after exit. The callee always assumes SME state is valid on entry.
+
+If there is a function call from streaming to non-streaming, or from non-streaming to streaming the compiler should inject the required `SMSTART` and `SMSTOP` instructions around the call. When calling streaming and non-streaming functions from streaming compatible functions, the compiler injects code to check the current SME state and switch if required. When calling streaming compatible functions the compiler never needs to check or change modes.
+
 ![alt text](image-4.png)
 
-### C++ ACLE
+Let us take a look at [this example](https://godbolt.org/z/hxehqv6eG). 
 
-
-C++ defines function attributes `__arm_streaming` that says that everything in this function should be streaming instructions only. `__arm_streaming_compatible` says that it can have both streaming and non-streaming instructions. The clang generates the required `SMSTART` and `SMSTOP` in prolog/epilog depending on the atttribute. By default (if no attribute is specified), it is considered to be non-streaming mode. If there is a function call from streaming to non-streaming, compiler should inject the required `SMSTART` and `SMSTOP` instruction:
-
+The code can be summarised as:
 ```c++
-void n_print_sme_status(void)
-{
-   printf ("__arm_in_streaming_mode = %d \n", __arm_in_streaming_mode());
+extern void n_extern_func(void);
+extern void s_extern_func(void) __arm_streaming;
+extern void sc_extern_func(void) __arm_streaming_compatible;
+
+void n_sme_func(void){
+    n_extern_func();
+
+    // Injected by compiler: SMSTART
+    s_extern_func();
+    // Injected by compiler: SMSTOP
+
+    sc_extern_func();
 }
 
-void s_print_sme_status(void) __arm_streaming 
-{
-   // SMSTART - injected by compiler
-   // ...
-   // some streaming code
-   // ...
-   // SMSTOP - injected by compiler
+void s_sme_func(void) __arm_streaming{
+   // Injected by compiler: SMSTOP
+   n_extern_func();
+   // Injected by compiler: SMSTART
+
+   s_extern_func();
+
+   sc_extern_func();
 }
 
-void sc_print_sme_status(void) __arm_streaming_compatible
-{
-   // if streaming==OFF, SMSTART ; injected by compiler
-   // streaming instruction
-   // ...
-   // some more streaming
-   // if streaming==ON, SMSTOP    ; injected by compiler
-   printf ("__arm_in_streaming_mode = %d \n", __arm_in_streaming_mode());
-   // more non-streaming
-   // ...
-   // if streaming==ON, SMSTART ; injected by compiler
-   // streaming instruction
-   //
-   // DO not change the SM state
+void sc_sme_func(void) __arm_streaming_compatible{
+    // Injected by compiler: bool sme_state = __arm_sme_state();
+    // Injected by compiler: if(sme_state) SMSTOP
+    n_extern_func();
+    // Injected by compiler: if(sme_state) SMSTART
+
+    // Injected by compiler: bool sme_state = __arm_sme_state();
+    // Injected by compiler: if(!sme_state) SMSTART
+    s_extern_func();
+    // Injected by compiler: if(!sme_state) SMSTOP
+
+    sc_extern_func();
 }
 ```
 
-#### Example 1
+Note how the SME state is changed before and after calls to the external functions.
 
-Let us take a look at [this example](https://godbolt.org/z/aG471E5aM). 
+## ABI
 
-- `n_print_sme_status()` is a regular non-streaming method.
-- `n_to_s()` is a regular non-streaming method that calls streaming method `bar()`. Here, we see that compiler added `smstart` before calling `bar()` and after the call, added `smstop` instruction.
-- On the other hand, `s_to_n()` is a streaming method that calls non-streaming method `foo()`. Here, we see, that compiler first added `smstop`, followed by call to `foo()` and then `smstart` instruction. This is make sure that the streaming mode stays ON in `s_to_n` function, even though there are calls to non-streaming methods in between.
-- Finally, `sc_to_n()` is a "arm_streaming_compatible" function that makes calls to both streaming and non-streaming function. Here, before calling streaming function, it will check if streaming mode is already ON (using `__arm_sme_state`) and turn it ON, if not ON already. Vice-versa, it preserves the value before turning it ON in `w19` and after the function (streaming or non-streaming) returns, wil restore the streaming mode. Thus in streaming-compatible functions, the modes are not turned ON and OFF automatically, but are done based on the current state of mode.
-
-#### Example 2
-
-Let us look at another example [here](https://godbolt.org/z/84Ebrcn5q).
-
-- `z8~z23` and `p4~p15` are saved/restored before streaming mode state changes. The incurs significant performance penalty and hence changing streaming state frequently is not advisable.
-
-### ABI
+### Saving / Restoring registers
 
 When entering and leaving streaming mode, all Z and P registers are trashed
 <i>
@@ -114,6 +120,10 @@ When entering and leaving streaming mode, all Z and P registers are trashed
     - SVE2 instructions that use First Fault Register 
     - Most NEON instructions become UNDEFINED
 </i>
+
+Let us look at another example [here](https://godbolt.org/z/84Ebrcn5q).
+
+- `z8~z23` and `p4~p15` are saved/restored before streaming mode state changes. The incurs significant performance penalty and hence changing streaming state frequently is not advisable.
 
 
 ## ZA storage space
