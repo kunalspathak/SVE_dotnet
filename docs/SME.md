@@ -139,21 +139,24 @@ Image courtsey: Arm documentation for 32B/256-bits SVL. Source: https://develope
 ![alt text](image-1.png)
 Image credits: https://community.arm.com/arm-community-blogs/b/architectures-and-processors-blog/posts/arm-scalable-matrix-extension-introduction
 
-
-## .NET Runtime
+## .NET Runtime use cases
 
 TODO - talk about the use case
+
+## .NET Runtime design
+
 To add the SME support in .NET Runtime, there are lot of considerations that need to be evaluated, out of which the primary ones are:
 
 - Switch streaming state automatically
-- Surfacing `ZA` storage using .NET APIs, if there is a need (which is unlikely).
 - Runtime aspects
+  - Agnostic VL in code generator
   - Exception Handling
   - Threads and SME state
   - NativeAOT and crossgen2 handling
   - .NET <--> PInvoke/System calls
   - Debugger and Profiler
   - Testability
+- Surfacing `ZA` storage using .NET APIs, if there is a need (which is unlikely).
 
 Let us walk through each of the above points in depth.
 
@@ -289,9 +292,45 @@ Cons:
 - The problem of what happens when VL-dependent objects are created in non-streaming and accessed in streaming remains unsolved. Code generator can add `throw InvalidProgramException` at such points, if it can prove that the object is VL-dependent and was created in non-streaming mode (or vice-versa), but it can be easily missed out.
 - Mistakes in injecting streaming state change instructions at right places can not only cause correctness issues, but also crashes.
 - With various optimizations, we might end up injecting streaming start in a branch, but do not add corresponding stop. This can lead to undefined behavior or crash the program.
+
+### Agnostic VL in code generator
+
+#### JIT
+
+`TYP_SIMD16`, `TYP_SIMD32`, `TYP_SIMD64`, `TYP_SIMD128` and `TYP_SIMD256`. No need of rearranging the locals in the stack
+
+#### Crossgen2
+
+
+
+#### NativeAOT
+
+- Locals need to be rearranged so they can be accecssed
+- 
+
 ### Restricting VL-dependent objects transfer between streaming states
 
-TODO: how to restrict VL-dependent objects are not passed between either modes?
+If we chose option# 1 of using method attributes like `"SME_STREAMING"`, code generator should be able to validate if arguments or return results of such method is VL-dependent objects and if yes, it will add a code to `throw InvalidProgramException` at the start of the method. If we prefer some other options, then we need to rethink on how to enforce such restriction.
+
+### Exception Handling
+- unwinding and what to track
+- Care needs to be taken to restore `PSTATE.SM` and `PSTATE.ZA` when exception is thrown and during unwinding.
+
+
+### Threads
+- How the state is tracked
+TODO
+
+### GC
+- GC thread suspension
+TODO
+
+### Misc
+- assembly routine, stubs
+TODO
+
+### .NET <--> PInvokes / System calls
+TODO
 
 
 ### Representation of ZA storage in .NET APIs
@@ -301,6 +340,7 @@ Need to come up with various naming strategy depending on if `ZA` is passed and 
 Refer: https://arm-software.github.io/acle/main/acle.html#sme-instruction-intrinsics
 
 [SMLAL](https://docsmirror.github.io/A64/2023-06/smlal_za_zzi.html)
+
 ```
 // SMLAL intrinsic for 2 quad-vector groups.
     void svmla_lane_za32[_s8]_vg4x2(uint32_t slice, svint8x2_t zn,
@@ -309,42 +349,39 @@ Refer: https://arm-software.github.io/acle/main/acle.html#sme-instruction-intrin
 
 ```
 
-
-### Exception Handling
-- unwinding and what to track
-- Care needs to be taken to restore `PSTATE.SM` and `PSTATE.ZA` when exception is thrown and during unwinding.
-
-
-### NativeAOT
-- Applicable for non-streaming as well as streaming
-
-### Threads
-- How the state is tracked
-### GC
-- GC thread suspension
-### Misc
-- assembly routine, stubs
-
-### .NET <--> PInvokes / System calls
-
-
 ### Debugger / Profiler
 
-- Need to see if streaming mode can change while debugging or if the processor mode might sometimes be diﬀerent from the one implied by the source code.
-- The register or variable display logic in VS/windbg when in streaming vs. not.
+- Appropriate support of displaying the values of `Vector<T>` in debugger should be taken depending on the streaming mode in which they were created. Since VL-dependent objects should not cross streaming mode boundary, such variables should not change their sizes in debugger when streaming type is switched.
+
+- Similarly, since scalable registers operate on different vector length when streaming mode is changed, debugger need to ensure that streaming mode changes are reflected in register contents it displayed. This might be easy for non-UI debuggers, where you need to type the command to display registers. For UI based debuggers, which has register window, the UI need to be refreshed with appropriate VL and its contents displayed.
+
+- Visual Studio, windbg and other debugger tools need to add support for displaying the contents of `ZA` storage space.
 
 
 ## Dependencies
+
 - Windows OS
   - Support of SME and context save/restore
-  - Unwind codes and exception handling
+  - Unwind codes for SME instructions
 - .NET Debugger team
-- VC++ support (?)
-- VS Debugger
+  - Display of `Vector<T>` in streaming and non-streaming modes.
+- C++ compiler support
+  - If we ever decide to use streaming in C++ runtime code or assembly routines
+- Visual Studio  Debugger and windbg
+
+## Testability
+
+- The Intrinsic unit tests that will be added for SME intrinsics should automatically test the switching of streaming modes. We can use [Armie](https://developer.arm.com/Tools%20and%20Software/Arm%20Instruction%20Emulator) to test some of the scenarios around switching streaming mode. Others can be validated on osx-arm64 M4+.
+- Coverage will be added in Antigen/Fuzzlyn to create methods that operate on streaming mode and that calls SME intrinsics. We will need osx-arm64 M4+ to get the coverage here for SME intrinsics.
+
 
 ## Hardware to prototype
-- Apple's M4: Currently have SME but does not have SVE.
-- Azure Cobalt / AWS's Graviton: Validate vector agnostic support
+
+- Apple's M4
+  - The only hardware that has SME, but it does not have SVE, so will be hard to test scenario of switching streaming modes. However, preliminary SME intrinsics will be able to validate.
+- Azure Cobalt / AWS's Graviton
+  - We can use these hardwares to validate vector agnostic support, which will be the foundation of validating SME.
+
 
 ## References
 - Overview series: 
@@ -363,7 +400,6 @@ Refer: https://arm-software.github.io/acle/main/acle.html#sme-instruction-intrin
 ### TODO
 - Need to come up with list of SVE instructions that are valid vs. invalid in streaming mode
 - Understand ZA storage
-- Come up with a scheme to handle various rules around `__arm_streaming` , `__arm_non_streaming` and `__arm_streaming_compatible`
 - format it properly
 - ZA lazy scheme: https://arm-software.github.io/acle/main/acle.html#sme-instruction-intrinsics
 
