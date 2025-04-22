@@ -250,18 +250,21 @@ Pros:
 - This approach is simpler to use and provides natural intent of executing streaming instructions in scoped block.
 Cons:
 - With this approach, calling .NET libraries method of different streaming mode becomes difficult.
+
   ```c#
   void Foo() // non-streaming
-{
-    using (StreamingMode m = new StreamingMode())
-    {
-      // streaming logic
-      Bar();  // non-streaming method
-      // streaming logic      
-}
+  {
+      using (StreamingMode m = new StreamingMode())
+      {
+        // streaming logic
+        Bar();  // non-streaming method
+        // streaming logic
+      }
   }
   ```
+
 - Just as mentioned in streaming state change intrinsics approach, accessing VL-dependent objects created from outside the streaming scope will be undefined.
+
   ```c#
   Vector<int> a = ...  // NSVL
   using (StreamingMode m = new StreamingMode())
@@ -269,16 +272,19 @@ Cons:
     // streaming logic
     .. = a; // undefined
   }
-```
+  ```
 
 - .NET developer can forget to add the RAII around streaming code or forget to remove RAII around code that previously had streaming but not currently. In both cases, it can lead to crashes in the program when executing incompatible instructions. Since such code is syntantically and semantically correct, C# compiler will not flag such errors.
 
 - This approach can be extended by the code generator to make it similar to approach #1. Code generator will see if the non-streaming code is getting invoked from streaming scope and can generate appropriate streaming state change instructions. However, it might be hard to do it other way round, if user forget to enclose the streaming logic with `StreamingMode()`.
+
 #### 4. Code generator tracks SM state 
 
 Instead of relying on the developer to specify places where streaming mode should be changed, code generator can take the heavy burden of tracking it implicitely. It can then also be made responsible for injecting appropriate streaming state change instructions at right place. Every time we see a call to SME intrinsics, `SMSTART` can be inserted and after that, `SMSTOP`. Several of these state changing instructions can be combined and performed in batch.
+
 Pros:
 - No method attributes or RAII or any specicial intrinsics is needed for this to work. The logic is abstracted away from .NET developer and there is no change in the workflow of developer writing their streaming/non-streaming code.
+
 Cons:
 - The problem of what happens when VL-dependent objects are created in non-streaming and accessed in streaming remains unsolved. Code generator can add `throw InvalidProgramException` at such points, if it can prove that the object is VL-dependent and was created in non-streaming mode (or vice-versa), but it can be easily missed out.
 - Mistakes in injecting streaming state change instructions at right places can not only cause correctness issues, but also crashes.
