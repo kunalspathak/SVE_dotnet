@@ -15,7 +15,7 @@ SME is Arm's architecture extension that provides optimal support for matrix ope
 SME introduces two fundamental concepts of "Streaming mode" and "ZA storage" that are crucial to operate on AI workloads. 
 
 To understand the "Streaming mode", let us revisit some background about Scalable Vector Extension (SVE).
-The SVE1 and SVE2 introduced the concept of "scalable vector registers". The size of these register or in other words, vector length (VL) can vary between 16B ~ 256B, depending on the hardware vendor. For e.g. Microsoft Azure's Cobalt offering the VL as 16B, Amazon AWS's Graviton3 has 32B while Fujitsu A64FX's Fugaku supercomputer has 64B vector length. The architecture is designed in such a way that it is not required for the VL to be known at compliation time. However, the VL can be known by querying the OS APIs (JIT) or by specifying the target hardware's VL upfront (AOT). Let us call the VL in SVE1/SVE2 as "non-streaming VL" or NSVL.
+The SVE1 and SVE2 introduced the concept of "scalable vector registers". The size of these register or in other words, vector length (VL) can vary between 16B ~ 256B, depending on the hardware vendor. For e.g. Microsoft Azure's Cobalt offering the VL as 16B, Amazon AWS's Graviton3 has 32B while Fujitsu A64FX's Fugaku supercomputer has 64B vector length. During compilation, the VL can be known by querying the OS APIs (JIT) or by specifying the target hardware's VL upfront (AOT). Let us call the VL in SVE1/SVE2 as "non-streaming VL" or NSVL. SME introduces the concept of "streaming mode" where a program can execute in an environment in which the VL can be different than NSVL. The VL in streaming mode is typically referred as Scalable Vector Length or SVL. Since Arm architecture allows SVE1/SVE2/SME features to be available as part of same hardware, it means at one point, a program can be operating on a NSVL, while other times, it can be operating on SVL. There are instructions to turn the streaming mode ON/OFF. To add to the complexity, SME core is a separate unit on a chip (and hence is allowed to have different VL), some SVE1/SVE2/NEON instructions are invalid when the program is running in "Streaming mode". Much care is needed to ensure that developer is not executing non-streaming code while streaming mode is ON. 
 
 SME introduces the concept of "streaming mode". A program can enter or leave streaming mode via the `SMSTART`/`SMSTOP` instructions. Most other SME instructions can only be run inside streaming mode. In all current implementations, the SME core is a separate unit on a chip which is switched to when entering streaming mode. Since this is a separate unit, the VL can be different than NSVL. The VL in streaming mode is typically referred as Scalable Vector Length or SVL. In addition, some SVE1/SVE2/NEON instructions are invalid when the program is running in "Streaming mode".
 
@@ -24,7 +24,7 @@ Since Arm architecture allows SVE1/SVE2/SME features to be available as parts of
 ![alt text](image-3.png)
 Image credit: https://www.youtube.com/watch?v=jrniGW_Hzno
 
-`FEAT_SME_FA64` feature, if present will have SME unit on the CPU itself (configuration on the right) and hence no instructions become illegal, but it may never be implemeneted for server SKUs. I need to yet confirm this from Arm.
+`FEAT_SME_FA64` feature, if present will have SME unit on the CPU itself (configuration on the right) and hence no instructions become illegal, but it might not get implemented for server SKUs because of space it takes on the silicon for SME unit on every core. This needs confirmation though from Arm. That leaves us with the option of shared SME for all or portion of CPUs (configuration on the left) and that might be more for PC, laptop, mobile devices. M4 is the only production ready device, but that just have SME and no SVE feature.
 
 The standard SME setup is one shared SME unit between all or subset of CPUs (configuration on the left). That is aimed more for PC, laptop, and mobile devices. M4 is the only production ready device - that just has SME and but no SVE features in the main CPU cores.
 
@@ -89,20 +89,20 @@ void sc_print_sme_status(void) __arm_streaming_compatible
 }
 ```
 
-#### Note 1
-https://godbolt.org/z/fY8hqahhW
+#### Example 1
 
-- need to add `__arm_sme_state`
-- only need to add `smstart` and `smstop` if in `__arm_streaming` / `__arm_streaming_compatible`. The later should check the status of `patate.sm` to turn on/off.
-- If calling `__arm_streaming`, the caller adds `smstart` before the call and `smstop` after the call. Inside `__arm_streaming`, if there is call to non-streaming function, then the `__arm_streaming` function will add `smstop` before such function call and then `smstart` again. Basically, in `__arm_streaming` function, streaming should always be ON. If non-streaming function is called, streaming needs to turn OFF and then resume streaming when the IP comes back.
-- However if calling `__arm_streaming_compatible`, then we do not need to add `smstart` and `smstop`. Instead, before making non-streaming call, it checks if streaming is ON and if yes, turns it OFF before proceeding. After the non-streaming function call returns, it will restore the streaming state. In short, it saves/restore the streaming state.
+Let us take a look at [this example](https://godbolt.org/z/aG471E5aM). 
 
-#### Note 2
+- `n_print_sme_status()` is a regular non-streaming method.
+- `n_to_s()` is a regular non-streaming method that calls streaming method `bar()`. Here, we see that compiler added `smstart` before calling `bar()` and after the call, added `smstop` instruction.
+- On the other hand, `s_to_n()` is a streaming method that calls non-streaming method `foo()`. Here, we see, that compiler first added `smstop`, followed by call to `foo()` and then `smstart` instruction. This is make sure that the streaming mode stays ON in `s_to_n` function, even though there are calls to non-streaming methods in between.
+- Finally, `sc_to_n()` is a "arm_streaming_compatible" function that makes calls to both streaming and non-streaming function. Here, before calling streaming function, it will check if streaming mode is already ON (using `__arm_sme_state`) and turn it ON, if not ON already. Vice-versa, it preserves the value before turning it ON in `w19` and after the function (streaming or non-streaming) returns, wil restore the streaming mode. Thus in streaming-compatible functions, the modes are not turned ON and OFF automatically, but are done based on the current state of mode.
 
-https://godbolt.org/z/84Ebrcn5q
+#### Example 2
 
-- need to double check what registers should be saved/restored
-- for the intrinsics that loads into horizontal/vertical, it needs to do range checks
+Let us look at another example [here](https://godbolt.org/z/84Ebrcn5q).
+
+- `z8~z23` and `p4~p15` are saved/restored before streaming mode state changes. The incurs significant performance penalty and hence changing streaming state frequently is not advisable.
 
 ### ABI
 
@@ -142,18 +142,35 @@ Image credits: https://community.arm.com/arm-community-blogs/b/architectures-and
 
 ## .NET Runtime
 
-### .NET APIs
+To add the SME support in .NET Runtime, there are lot of considerations that need to be evaluated, out of which the primary ones are:
 
-#### Goal
+- Switch streaming mode ON/OFF automatically
+- Surfacing `ZA` storage using .NET APIs, if there is a need (which is unlikely).
+- Runtime aspects
+  - Exception Handling
+  - Threads and SME state
+  - NativeAOT and crossgen2 handling
+  - .NET <--> PInvoke/System calls
+  - Debugger and Profiler
+  - Testability
 
-#### Representation options
-- namespace
-- MethodAttribute similar to ACLE + static analyzer (does everyone enable it?)
-- Determine during compilation similar to FFR
-- restrict that VL-dependent objects are not passed between either modes.
-- `using`
-- `STREAMING_ON` and `STREAMING_OFF` APIs. User can forget to do one thing or other.
-- Similar to FFR where we store the state of SM in GPR and add checks like 
+Let us walk through each of the above points in depth.
+
+### Streaming state change
+
+As described above, C++ ACLE defines function atttributes like `arm_streaming` and `arm_streaming_compatible`. These attributes eases the compiler to decide if it needs to turn streaming mode ON or OFF.
+
+#### 1. MethodAttribute
+
+static analyzer (does everyone enables it?)
+
+#### 2. Streaming Namespace
+
+#### 3. RAII style `using`
+
+#### 4. FFR style tracking
+
+Similar to FFR where we store the state of SM in GPR and add checks like 
 ```
 if (rax == 1)
 {
@@ -162,8 +179,16 @@ if (rax == 1)
 non_streaming(); // 
 ```
 
+#### 5. Expose StreamingON() and StreamingOFF()
 
-#### Representation of ZA storage in .NET APIs
+ User can forget to do one thing or other.
+
+### Restricting VL-dependent objects transfer between streaming states
+
+how to restrict VL-dependent objects are not passed between either modes?
+
+
+### Representation of ZA storage in .NET APIs
 
 Need to come up with various naming strategy depending on if `ZA` is passed and if it is operating on single lane, etc. like having `_x2` or `_x4` suffix or `_vg2` or `_vg4` suffix or `_vg1x2`, `_vg2x2`, etc.
 
@@ -178,6 +203,7 @@ Refer: https://arm-software.github.io/acle/main/acle.html#sme-instruction-intrin
 
 ```
 
+
 ### Exception Handling
 - unwinding and what to track
 - Care needs to be taken to restore `PSTATE.SM` and `PSTATE.ZA` when exception is thrown and during unwinding.
@@ -189,16 +215,14 @@ Refer: https://arm-software.github.io/acle/main/acle.html#sme-instruction-intrin
 ### Threads
 - How the state is tracked
 
-### .NET <--> PInvokes
+### .NET <--> PInvokes / System calls
 
-### .NET <--> System calls
 
-### Debugger
+### Debugger / Profiler
 
 - Need to see if streaming mode can change while debugging or if the processor mode might sometimes be diﬀerent from the one implied by the source code.
 - The register or variable display logic in VS/windbg when in streaming vs. not.
 
-### Profile
 
 ## Dependencies
 - Windows OS
@@ -232,5 +256,8 @@ Refer: https://arm-software.github.io/acle/main/acle.html#sme-instruction-intrin
 - Come up with a scheme to handle various rules around `__arm_streaming` , `__arm_non_streaming` and `__arm_streaming_compatible`
 - format it properly
 - ZA lazy scheme: https://arm-software.github.io/acle/main/acle.html#sme-instruction-intrinsics
+
+### Open Questions
+- What happens when `Vector<T>` is created in streaming mode? Can we pass it around to non-streaming mode and vice-versa? 18.1.7 restricts VL-dependent arguments to be passed that way, but how to restrict them in C#?
 
 -------
