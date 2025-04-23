@@ -446,6 +446,8 @@ Refer: https://arm-software.github.io/acle/main/acle.html#sme-instruction-intrin
 
 Arm understands that SME is complicated and does not expect the average developer to understand all the concepts and edge cases required to write  SME code. Writing performant SME code is even harder. As such, Arm provides the [Kleidi libraries](https://www.arm.com/products/development-tools/embedded-and-software/kleidi-libraries), Kleidi AI and Kleidi CV (computer vision). These libraries are written in C and low level assembly, and are open source on Arm gitlab under the Apache 2 license. They aim to provide provide the most performant versions of common AI and CV routines on Arm hardware, automatically utilising SME when it is available.
 
+A lot of functions in Kleidi CV are simply standard SVE routines running in streaming mode to take care of the extra vector length.
+
 One option would be to wrap Kleidi in a C# wrapper and provide this as an external package on NuGet. It would require regular maintainence, however it may be possible to mostly automate this. To be feasible this would need buy in from both the Arm Kleidi team and the Microsoft CoreCLR team, and an agreement on who owns/maintains the wrapper.
 
 Pros:
