@@ -442,6 +442,23 @@ Refer: https://arm-software.github.io/acle/main/acle.html#sme-instruction-intrin
 - Azure Cobalt / AWS's Graviton
   - We can use these hardwares to validate vector agnostic support, which will be the foundation of validating SME.
 
+## Alternative approach - Using Kleidi
+
+Arm understands that SME is complicated and does not expect the average developer to understand all the concepts and edge cases required to write  SME code. Writing performant SME code is even harder. As such, Arm provides the [Kleidi libraries](https://www.arm.com/products/development-tools/embedded-and-software/kleidi-libraries), Kleidi AI and Kleidi CV (computer vision). These libraries are written in C and low level assembly, and are open source on Arm gitlab under the Apache 2 license. They aim to provide provide the most performant versions of common AI and CV routines on Arm hardware, automatically utilising SME when it is available.
+
+One option would be to wrap Kleidi in a C# wrapper and provide this as an external package on NuGet. It would require regular maintainence, however it may be possible to mostly automate this. To be feasible this would need buy in from both the Arm Kleidi team and the Microsoft CoreCLR team, and an agreement on who owns/maintains the wrapper.
+
+Pros:
+- No need for any compiler changes or any large scale work items in CoreCLR.
+- The wrapper will be fairly easy to write and maintain when compared to implementing a full SME API.
+- Expected good performance immediately.
+
+Cons:
+- C# libraries or any code within coreCLR cannot use Kleidi due to the dependency on an external library.
+- The library may be missing relevant use cases for C#
+- Long term maintenance - what happens if the library is abandoned or simply removed?
+
+This approach could be used as a stepping stone until an eventual SME API is implemented.
 
 ## References
 - Overview series: 
