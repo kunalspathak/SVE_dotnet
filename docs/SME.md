@@ -293,17 +293,77 @@ Cons:
 - Mistakes in injecting streaming state change instructions at right places can not only cause correctness issues, but also crashes.
 - With various optimizations, we might end up injecting streaming start in a branch, but do not add corresponding stop. This can lead to undefined behavior or crash the program.
 
-### Agnostic VL in code generator
+### Code generation for Agnostic VL
+
+`Vector<T>` is the .NET's representation of vectors, whose length is known only at runtime. They represent scalable registers that were added as part of SVE feature in .NET 9. We will continue to represent them for SME feature as well. To support SME feature, .NET's code generator should have the needed support to understand VL agnostic concept as well as generate VL agnostic code.
+
+TODO: Write a line or two to connect the "full" vs. "partial" VL agnostic with this example:
+
+ Hence, `Vector<T>.Count` can return different result depending on whether the execution is happening in streaming mode or not. Care has to be taken by the code generator to make that no assumption is made for the size of VL, and if needed, it should be polled from the hardware using `rdvl` instruction. For example, on a 256B SVE machine, in a JIT scenario, to compare if all lanes of operand1 are greater than operand2, we would do something like this:
+
+```asm
+    fcmgt   p0.s, p0/z, z8.s, z0.s  # Activate p0 lanes for which z8 > z0
+    ptrue   p1.s                  
+    cntp    x0, p1, p0.s            # Count number of active lanes   
+    cmp     x0, #8                  # If all 8 lanes are active means all
+    cset    x0, eq                  # lanes satisfied z8 > z0
+```
+
+However, the assumption of `#8` lanes will not work for SVE non-JIT scenario or for any of the SME scenarios. Hence, code generator should ensure that it emits VL agnostic code. Above, it would use `rdvl` instruction to find out the lanes count. So the code should look like this:
+
+```asm
+    fcmgt   p0.s, p0/z, z8.s, z0.s  # Activate p0 lanes for which z8 > z0
+    ptrue   p1.s                  
+    cntp    x0, p1, p0.s            # Count number of active lanes   
+    rdvl    x1, #4                  # No. of lanes of 4-byte elements
+    cmp     x0, x1                  # If all 8 lanes are active means all
+    cset    x0, eq                  # lanes satisfied z8 > z0
+```
+
+Above code would work not only for SVE non-JIT scenarios but also regardless if the code is getting executed in streaming or non-streaming mode.
+
+| Scalable Mode | Method type   | Code generation mode | VL agnostic code |
+|---------------|---------------|----------------------|-------------|
+| SVE           | non-streaming | JIT                  | partial     |
+| SVE           | non-streaming | NativeAOT            | full        |
+| SME           | non-streaming | JIT                  | partial     |
+| SME           | streaming     | JIT                  | full        |
+| SME           | both          | NativeAOT            | full        |
+
+In "partial" VL agnostic mode, following things can be done:
+- Dependency on VL size can be taken and the size can be embedded in the generated code. (see above example).
+- VN takes advantage of constant data populated in vectors and can perform optimizations
+- Code to load constant data from RO section into `Vector<T>` is allowed.
+- VL variables can be present in "local" area and no rearrangement is needed.
+- Stack size can be calculated upfront and frame size can be embedded in the code even if some VL variables are saved on stack.
+- Other optimizations that takes Vector length in consideration like loop unrolling, struct block copy, etc. can be utilized.
+
+In "full" VL agnostic mode, following things are prohibited and alternative approach will have to be taken:
+- Dependency on VL size and embedding in code will be prohibited. Wherever there is a need to get VL size, `rdvl` will be used to poll the vector length.
+- For `Vector<T>` constants, since we do not VL upfront, value numbering will assign `NoVN` to such constants and hence no value numbering related optimizations will be performed on them.
+-  For cases where constant data needs to be populated in vectors, the existing mechanism of NEON `Vector128` will be repurposed.
+- VL variables should be present at the bottom of stack frame and all of them should be next to each other in single section. They will be then referenced by using [load](https://docsmirror.github.io/A64/2023-06/ldr_z_bi.html)/[store](https://docsmirror.github.io/A64/2023-06/str_z_bi.html) that is VL-agnostic.
+- Since stack size cannot be calculated upfront, instructions such as [AddVL] (https://docsmirror.github.io/A64/2023-06/addvl_r_ri.html) will be used to create the stack frame.
+- Other optimizations that takes Vector length in consideration like loop unrolling, struct block copy, etc. will be disabled.
+
+Let us see how this support will be added for various scenarios viz. JIT, Crossgen2 and NativeAOT.
 
 #### JIT
 
+From the table above, partial support of agnostic VL 
 `TYP_SIMD16`, `TYP_SIMD32`, `TYP_SIMD64`, `TYP_SIMD128` and `TYP_SIMD256`. No need of rearranging the locals in the stack
+
+Most of the optimizations around VN will be disabled when "full" VL agnostic code is needed because the VL is unknown.
+
+Vector<T>.Length will be fixed but in nativeAOT, it will be `cntb` based.
 
 #### Crossgen2
 
-
+Generate NEON to begin with, but rejit if VL >= 32 is available on the target machine.
 
 #### NativeAOT
+
+Will use `TYP_SIMDVL` to represent it. Most of the optimizations around VN will be disabled because the VL is unknown.
 
 - Locals need to be rearranged so they can be accecssed
 - 
@@ -316,13 +376,13 @@ If we chose option# 1 of using method attributes like `"SME_STREAMING"`, code ge
 - unwinding and what to track
 - Care needs to be taken to restore `PSTATE.SM` and `PSTATE.ZA` when exception is thrown and during unwinding.
 
-
 ### Threads
-- How the state is tracked
+- How the state is tracked. The state is inherited I think?
 TODO
 
 ### GC
 - GC thread suspension
+- update `Vector<T>` size to scan objects on heap
 TODO
 
 ### Misc
