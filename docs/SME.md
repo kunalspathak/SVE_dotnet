@@ -168,16 +168,22 @@ As described above, C++ ACLE defines function atttributes like `arm_streaming` a
 
 The first option to be considered would be to do something similar to what ACLE proposes for C++ code. Introduce a method attributes "SME_STREAMING" and "SME_STREAMING_COMPATIBLE" corresponding to `arm_streaming` and `arm_streaming_compatible` respectively. Having these method attributes, user can use them on methods that will have contain the code related to SME and streaming.
 
-Code generator can inspect these attributes and accordingly add relevant streaming state change instructions at appropriate places in caller of such methods, if applicable. In below example, streaming state change is inserted in `Bar()` method for calling non-streaming `Baz()` method from it.
-Code generator could also optimize the number of times it need to change between streaming states as seen in `Baz()`, a non-streaming method below. Instead of switching state twice, first for `Foo()` and then for `Bar()`, it would do it just once.
+The Code generator can inspect these attributes and accordingly add relevant streaming state change instructions at appropriate places in caller of such methods, if applicable. In below example, streaming state change is inserted in `Bar()` method for calling non-streaming `Baz()` method from it.
+
+The Code generator could also optimize the number of times it need to change between streaming states as seen in `Baz()`, a non-streaming method below. Instead of switching state twice, first for `Foo()` and then for `Bar()`, it would do it just once. Although note that this is not done today for C++ in Clang at the highest optimisation level.
+
 Care has to be taken by the code generator while inlining streaming method in a non-streaming method and vice-versa. By adding required streaming state instructions at corresponding places, it should be possible to let inlining happen cross streaming method states.
 Lastly, while compiling streaming methods for target that does not have SME support, `throw PlatformNotSupportedException` can be inserted at the top of the method.
+
+All SME APIs would be marked as either "SME_STREAMING" and "SME_STREAMING_COMPATIBLE". This ensures it is always valid to call an SME API from any function.
+
 ```c#
 [SME_STREAMING]
 void Foo() 
 {
   ...
 }
+
 [SME_STREAMING]
 void Bar() 
 {
@@ -187,6 +193,7 @@ void Bar()
   // insert SMSTART
   ...
 }
+
 void Baz() 
 {
   ...
@@ -197,28 +204,32 @@ void Baz()
   ...
 }
 ```
+
 Pros:
-- Having method attributes on a method will help code generator to insert accurate streaming state-change instructions at required locations. Without such *hints* provided, the code generator's job will be difficult trying to guess and estimate the right location of inserting streaming state-change instructions. If the placement of such instructions get wrong, the best case scenario could be that we can see performance hit. This can happen when a state-change is not required, but code generator generated one. Since state-change instruction is expensive because it need to save/restore lot of registers, it will take a hit on performance. The worst case scenario of adding streaming state change instructions in wrong places can lead to executing a non-streaming instruction while the PE is set to be in streaming mode or executing a streaming instruction while the PE is NOT in streaming mode. Both of those can cause fault and crash the process. Having a method attribute makes the job of code generator easier.
+- Having method attributes on a method will help code generator to insert accurate streaming state-change instructions at the required locations. Without such *hints* provided, the code generator's job will be difficult trying to guess and estimate the right location of inserting streaming state-change instructions. If the placement of such instructions is incorrect, then the best case scenario could be that we can see performance hit. This can happen when a state-change is not required, but code generator generated one. Since state-change instruction is expensive because it need to save/restore lot of registers, it will take a hit on performance. The worst case scenario of adding streaming state change instructions in wrong places can lead to executing a non-streaming instruction while the PE is set to be in streaming mode or executing a streaming instruction while the PE is NOT in streaming mode. Both of those can cause fault and crash the process. Having a method attribute makes the job of code generator easier.
 - With a method attribute for streaming, .NET developer can clearly design their application and encapsulate the streaming specific logic in a dedicated method.
 - As mentioned above, it is undefined behavior passing VL-dependent objects between methods of different streaming states. By having a method attribute, we could have a static analyzer that will check for such mistakes done by developers.
-- There can be occurances where .NET developer forget to add/remove the method attributes. Let us explore two situations that can arise:
+- There can be occurances where .NET developer forgets to add/remove the method attributes. Let us explore two situations that can arise:
   - a. A developer should have added `[SME_STREAMING]` attribute on method `A()`, but forgets to add one. In such case, code generator will treat `A()` as non-streaming method and will insert streaming state change instruction if there is: (1) SME intrinsic API or (2) Call to a method marked with `[SME_STREAMING]`.
   - b. A developer should have removed `[SME_STREAMING]` attribute from method `A()` because it no longer holds any streaming related code, but forget to do so. Such methods will continue to get treated as streaming methods and streaming-state change instruction will be added for entire code in the method. Several `SMSTOP, non-streaming code, SMSTART` can be batch combined by code generator to have just one `SMSTOP` at the beginning of the method and one `SMSTART` at the end of method. Note, this will be needed because the caller will see `A()` as streaming method and will add `SMSTART` before calling `A()` and `SMSTOP` after call is done.
   The take away from this is that with the presence of information of streaming state in which a method is supposed to run, code generator can much easily add the required streaming state instructions, even if the information is inaccurate or outdated sometimes.
 - Existing libraries methods invocation (streaming or non-streaming callees)  can be made easily from streaming or non-streaming callers without having to 
 Cons:
-- .NET developer wrongly put or forget to put the streaming attribute on a method. We have already seen above that this should not affect the correctness characteristics, but can affect performance of the methods.
+- .NET developer wrongly puts or forgets to put the streaming attribute on a method. We have already seen above that this should not affect the correctness characteristics, but can affect performance of the methods.
 - Although we called out that static analyzers can be used to identify errors made by developers by passing VL-dependent objects between different streaming state methods, lot of projects might turn off static analyzers and for them, the behavior in such scenario is undefined. We could still utilize the method attribute information to analyze if VL-dependent arguments are passed or returned and add `throw InvalidProgramException` or something similar.
+
 #### 2. Expose StreamingON() and StreamingOFF()
 
 Alternate approach to method attributes is exposing streaming state change instructions as intrinsics like `StreamingON()` and `StreamingOFF()`. This will allow developers to drive the streaming mode and code generator will just insert corresponding instructions at relevant places in the code.
+
 Pros:
 - The benefit of exposing these as .NET intrinsics is that developer have fine grain control over the places in their code where they want to start and stop streaming.
 - .NET developers workflow remains same (unlike #1 above, where they had to add an attribute on the method).
 - No work needed for code generation in analyzing the placement of streaming state change instructions. The only thing that code generator would be responsible for is tracking the registers that should be saved and restored before/after the invocation of these intrinsics.
+
 Cons:
 - This option, however, gives lot more power to .NET developers than needed, and there are high chances that it can go wrong easily. For example, they can have `StreamingON()` and unknowingly write code that generates NEON instructions, while streaming is ON. This can cause fault and crash their process.
-- Just like method attributes case, developers can forget to call one of these intrinsics and that can result in catastropic failure. While in case of method attributes scenario, code generator would protect the code by adding appropriate streaming state change instructions, nothing of that sort will happen for this option. Not only the code will be performance ineffecient but will also led to crashes.
+- Just like method attributes case, developers can forget to call one of these intrinsics and that can result in catastropic failure. While in case of method attributes scenario, code generator would protect the code by adding appropriate streaming state change instructions, nothing of that sort will happen for this option. Not only the code will be performance ineffecient but will also led to crashes - calling an SME API that is only valid in streaming mode would cause an illegal instruction exception at runtime.
 - Even if the developer is careful in adding `StreamingON()` and `StreamingOff()` APIs, there will be just too many of them scattered around in the code and they will have to remember what the mode is at the point of writing their code to make sure counterpart API is called. 
 - Sometimes, we could also see code like and there is no way to flag such errors to users.
   ```c#
@@ -239,9 +250,12 @@ Cons:
   ... = a;        // undefined
   StreamingOff();  
   ```
+- Calling functions whilst in streaming mode adds additional complexity for the user to track. The user will not know which library routines are safe to call whilst in streaming mode. Is it safe to call `System.Console.WriteLine()` whilst in streaming mode?
+
 #### 3. RAII style `using`
 
 Another option to expose the streaming state change would be to give it "Resource Acquisition is initialization" semantics or RAII. To do that, we can introduce a placeholder class in `System.Runtime.Intrinsics.Arm.Sve` called `StreamingMode`. The lifetime of this class will dictate the entering and leaving of streaming mode.
+
 ```c#
 using (StreamingMode m = new StreamingMode())
 {
@@ -251,6 +265,7 @@ using (StreamingMode m = new StreamingMode())
 
 Pros:
 - This approach is simpler to use and provides natural intent of executing streaming instructions in scoped block.
+
 Cons:
 - With this approach, calling .NET libraries method of different streaming mode becomes difficult.
 
@@ -277,11 +292,23 @@ Cons:
   }
   ```
 
-- .NET developer can forget to add the RAII around streaming code or forget to remove RAII around code that previously had streaming but not currently. In both cases, it can lead to crashes in the program when executing incompatible instructions. Since such code is syntantically and semantically correct, C# compiler will not flag such errors.
+- The .NET developer can forget to add the RAII around streaming code or forget to remove RAII around code that previously had streaming but not currently. In both cases, it can lead to crashes in the program when executing incompatible instructions. Since such code is syntantically and semantically correct, the C# compiler will not flag such errors.
 
-- This approach can be extended by the code generator to make it similar to approach #1. Code generator will see if the non-streaming code is getting invoked from streaming scope and can generate appropriate streaming state change instructions. However, it might be hard to do it other way round, if user forget to enclose the streaming logic with `StreamingMode()`.
+- This approach can be extended by the code generator to make it similar to approach #1. The code generator will see if the non-streaming code is getting invoked from streaming scope and can generate appropriate streaming state change instructions. However, it might be hard to do it other way round, if the users forget to enclose the streaming logic with `StreamingMode()`.
 
-#### 4. Code generator tracks SM state 
+#### 4. Hybrid approach
+
+A hybrid approach may be possible. The SME APIs would be marked with [SME_STREAMING] and [SME_STREAMING_COMPATIBLE], but generally this would not be added to user methods and it would not cause the compiler to insert mode changes. .NET developers would either use the StreamingON() and StreamingOFF() or StreamingMode RAII method in their code. At JIT compile time, if methods marked with attributes are used in a function, then the compiler can check if the current mode is in the correct mode.
+
+Pros:
+- The compiler can error safely instead of getting an illegal instruction at runtime
+
+Cons:
+- The approach is confusing as to when the attributes can be used.
+- It may be difficult to ensure all error cases are captured correctly.
+
+
+#### 5. Code generator tracks SM state
 
 Instead of relying on the developer to specify places where streaming mode should be changed, code generator can take the heavy burden of tracking it implicitely. It can then also be made responsible for injecting appropriate streaming state change instructions at right place. Every time we see a call to SME intrinsics, `SMSTART` can be inserted and after that, `SMSTOP`. Several of these state changing instructions can be combined and performed in batch.
 
@@ -292,6 +319,16 @@ Cons:
 - The problem of what happens when VL-dependent objects are created in non-streaming and accessed in streaming remains unsolved. Code generator can add `throw InvalidProgramException` at such points, if it can prove that the object is VL-dependent and was created in non-streaming mode (or vice-versa), but it can be easily missed out.
 - Mistakes in injecting streaming state change instructions at right places can not only cause correctness issues, but also crashes.
 - With various optimizations, we might end up injecting streaming start in a branch, but do not add corresponding stop. This can lead to undefined behavior or crash the program.
+- Calling non-SME code in between SME intrinsic calls will result in the state switching even though is not required resulting in performance loss:
+  ```c#
+  // Streaming mode started
+  SME.method1();
+  // Streaming mode stopped
+  x=x+1; // This could have been run in streaming mode
+  // Streaming mode started
+  SME.method2();
+  // Streaming mode stopped
+```
 
 ### Code generation for Agnostic VL
 
