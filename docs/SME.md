@@ -330,6 +330,7 @@ Cons:
 - Mistakes in injecting streaming state change instructions at right places can not only cause correctness issues, but also crashes.
 - With various optimizations, we might end up injecting streaming start in a branch, but do not add corresponding stop. This can lead to undefined behavior or crash the program.
 - Calling non-SME code in between SME intrinsic calls will result in the state switching even though is not required resulting in performance loss:
+
   ```c#
   // Streaming mode started
   SME.method1();
@@ -338,7 +339,7 @@ Cons:
   // Streaming mode started
   SME.method2();
   // Streaming mode stopped
-```
+  ```
 
 ### Code generation for Agnostic VL
 
@@ -390,7 +391,7 @@ In "full" VL agnostic mode, following things are prohibited and alternative appr
 - For `Vector<T>` constants, since we do not VL upfront, value numbering will assign `NoVN` to such constants and hence no value numbering related optimizations will be performed on them.
 -  For cases where constant data needs to be populated in vectors, the existing mechanism of NEON `Vector128` will be repurposed.
 - VL variables should be present at the bottom of stack frame and all of them should be next to each other in single section. They will be then referenced by using [load](https://docsmirror.github.io/A64/2023-06/ldr_z_bi.html)/[store](https://docsmirror.github.io/A64/2023-06/str_z_bi.html) that is VL-agnostic.
-- Since stack size cannot be calculated upfront, instructions such as [AddVL] (https://docsmirror.github.io/A64/2023-06/addvl_r_ri.html) will be used to create the stack frame.
+- Since stack size cannot be calculated upfront, instructions such as [AddVL](https://docsmirror.github.io/A64/2023-06/addvl_r_ri.html) will be used to create the stack frame.
 - Other optimizations that takes Vector length in consideration like loop unrolling, struct block copy, etc. will be disabled.
 
 Let us see how this support will be added for various scenarios viz. JIT, Crossgen2 and NativeAOT.
