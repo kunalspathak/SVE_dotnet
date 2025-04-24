@@ -132,19 +132,15 @@ Let us look at another example [here](https://godbolt.org/z/84Ebrcn5q).
 
 SME is suitable for a number of PC/laptop use cases.
 
-- Used to accelerate Tensor
-Tensor uses lots of matrix manipulation. These could be simplified by using `Za` in SME.
+- Accelerate Tensor for matrix manipulation. These could be simplified by using `ZA` in SME.
 
-- Acceleration for existing SVE routines
-Arm hardware today is restricted to 128bits. SME implementations generlaly implement wider vector lengths.
-Any routines written in SVE could be easily modified to run in streaming mode. This assumes the routine only uses APIs valid in streaming mode. This would give a performance boost due to the wider vector lengths.
+- Acceleration for existing SVE routines: Arm hardware today is restricted to 128bits. SME implementations generlaly implement wider vector lengths. Any routines written in SVE could be easily modified to run in streaming mode. This assumes the routine only uses APIs valid in streaming mode. This would give a performance boost due to the wider vector lengths.
 
 - Other AI inference
 
-- Any other workloads requiring large matrix manipulation.
+- Any other workloads requiring large matrix manipulation, e.g. in [Tensor SDK](https://learn.microsoft.com/en-us/dotnet/api/system.numerics.tensors.tensor-1?view=net-9.0-pp).
 
 SME is not of use in server scenarios due to it not being available on sever hardware.
-
 
 ## .NET Runtime design
 
@@ -365,7 +361,7 @@ The list includes instructions in both AdvSimd and SVE:
   - SVE Non-temporal memory access
   - SVE First faulting loads and the FFR register
   - Most AdvSimd instructions
-  - TODO: more?
+  - TODO: Come up with actual list
 
 There are a number of ways this could be handled:
 
@@ -620,9 +616,11 @@ Cons:
 This approach could be used as a stepping stone until an eventual SME API is implemented.
 
 ## References
-- Overview series: 
-  - https://community.arm.com/arm-community-blogs/b/architectures-and-processors-blog/posts/scalable-matrix-extension-armv9-a-architecture
-  - Arm SME [part 1](https://community.arm.com/arm-community-blogs/b/architectures-and-processors-blog/posts/arm-scalable-matrix-extension-introduction), [part 2](https://community.arm.com/arm-community-blogs/b/architectures-and-processors-blog/posts/arm-scalable-matrix-extension-introduction-p2) and [part 3](https://community.arm.com/arm-community-blogs/b/architectures-and-processors-blog/posts/matrix-matrix-multiplication-neon-sve-and-sme-compared).
+- [Overview](https://community.arm.com/arm-community-blogs/b/architectures-and-processors-blog/posts/scalable-matrix-extension-armv9-a-architecture)
+
+- Arm SME community blog posts [part 1](https://community.arm.com/arm-community-blogs/b/architectures-and-processors-blog/posts/arm-scalable-matrix-extension-introduction), [part 2](https://community.arm.com/arm-community-blogs/b/architectures-and-processors-blog/posts/arm-scalable-matrix-extension-introduction-p2)
+
+- [Matrix Multiplication example in NEON, SVE and SME](https://community.arm.com/arm-community-blogs/b/architectures-and-processors-blog/posts/matrix-matrix-multiplication-neon-sve-and-sme-compared).
 
 - SME instructions: https://docsmirror.github.io/A64/2023-06/mortlachindex.html
 - SME kernel docs: https://docs.kernel.org/arch/arm64/sme.html
@@ -630,8 +628,7 @@ This approach could be used as a stepping stone until an eventual SME API is imp
 
 
 ### TODO
-- Need to come up with list of SVE instructions that are valid vs. invalid in streaming mode
-- Understand ZA storage
+- More information about ZA storage, anything that runtime needs to handle about saving and restoring it.
 - ZA lazy scheme: https://arm-software.github.io/acle/main/acle.html#sme-instruction-intrinsics
 
 ### Open Questions
