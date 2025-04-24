@@ -473,11 +473,12 @@ Image credits: https://community.arm.com/arm-community-blogs/b/architectures-and
 
 ### Representation of ZA storage in .NET APIs
 
-Need to come up with various naming strategy depending on if `ZA` is passed and if it is operating on single lane, etc. like having `_x2` or `_x4` suffix or `_vg2` or `_vg4` suffix or `_vg1x2`, `_vg2x2`, etc.
+ACLE do not expose `ZA` in the API signature. Instead they have one of the following notations on intrinsic APIs:
+ - `__arm_in("za")` : The callee takes the `ZA` state as input and returns with the state unchanged.
+ - `__arm_out("za")` : The callee ignores the incoming `ZA` state and returns new state.
+ - `__arm_inout("za")` : The callee takes the state as `ZA` input and returns new state.
 
-Refer: https://arm-software.github.io/acle/main/acle.html#sme-instruction-intrinsics
-
-[SMLAL](https://docsmirror.github.io/A64/2023-06/smlal_za_zzi.html)
+Below is the API for [SMLAL](https://docsmirror.github.io/A64/2023-06/smlal_za_zzi.html) instruction.
 
 ```
 // SMLAL intrinsic for 2 quad-vector groups.
@@ -486,6 +487,16 @@ Refer: https://arm-software.github.io/acle/main/acle.html#sme-instruction-intrin
       __arm_streaming __arm_inout("za");
 
 ```
+
+We can follow the similar approach and not expose `ZA` storage in .NET APIs. We will map the APIs to the SME instructions during code generation and that will implicitely take care of reading/writing `ZA` state. So for above instruction, we will have API:
+
+```C#
+void SvmlaLaneZA32S8_VG4x2(uint slice, Tuple<Vector<byte>, Vector<byte>> zn, Vector<byte> zm, ulong imm_idx);
+```
+
+There are various nomenclature rules for API names that depends on if `ZA` is used by the instruction as input state, if it is operating on single lane, etc. The API will append those operations like having `_x2`/`_x4`or `_vg2`/ `_vg4` or `_vg1x2`/`_vg2x2`, etc. We need to follow similar rules for .NET APIs.
+
+Refer: https://arm-software.github.io/acle/main/acle.html#sme-instruction-intrinsics
 
 ## Dependencies
 
@@ -545,7 +556,6 @@ This approach could be used as a stepping stone until an eventual SME API is imp
 ### TODO
 - Need to come up with list of SVE instructions that are valid vs. invalid in streaming mode
 - Understand ZA storage
-- format it properly
 - ZA lazy scheme: https://arm-software.github.io/acle/main/acle.html#sme-instruction-intrinsics
 
 ### Open Questions
