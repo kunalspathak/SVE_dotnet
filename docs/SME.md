@@ -333,7 +333,7 @@ Cons:
 - It may be difficult to ensure all error cases are captured correctly.
 
 
-#### 5. Code generator tracks SM state
+#### 5. Implicit (Code generator tracks SM state)
 
 Instead of relying on the developer to specify places where streaming mode should be changed, code generator can take the heavy burden of tracking it implicitely. It can then also be made responsible for injecting appropriate streaming state change instructions at right place. Every time we see a call to SME intrinsics, `SMSTART` can be inserted and after that, `SMSTOP`. Several of these state changing instructions can be combined and performed in batch.
 
@@ -355,6 +355,53 @@ Cons:
   SME.method2();
   // Streaming mode stopped
   ```
+
+### Missing APIs in streaming mode
+
+There are a number of APIs that are not avilable when in streaming mode. This is mostly because these instruction would mostly likely have bad performance characteristics if implemented on the SME unit.
+
+The list includes instructions in both AdvSimd and SVE:
+  - SVE gather loads / scatter stores
+  - SVE Non-temporal memory access
+  - SVE First faulting loads and the FFR register
+  - Most AdvSimd instructions
+  - TODO: more?
+
+There are a number of ways this could be handled:
+
+#### 1. Subclassing
+
+Put all non-streaming APIs into a separate class.
+For example `SVENonStreaming.GatherLoad()` or `SVE.NonStreaming.GatherLoad()`
+
+Pros:
+- It's clear which methods are valid
+
+Cons:
+- There would have to be an API break. Existing AdvSimd routines would have to be moved into `AdvSimd.NonStreaming`
+- Additional complication for AdvSimd/SVE users who don't use or know about SME. I will not be clear why is a given routine in a slightly different class.
+- If `FEAT_SME_FA64` were ever implemented then all AdvSimd/SVE APIs would be valid on that platform. The simple solution here would to still treat those APIs as invalid.
+- A future Arm architecture extension could introduce more restrictions, or have a different set of restrictions.
+
+#### 2. MethodAttribute
+
+When using the MethodAttribute implementation, all SVE and AdvSimd APIs that are valid in streaming mode would be marked as streaming compatible.
+
+Pros:
+- It will be clear when looking at the API definition which methods are valid for SME.
+- Any future changes in restrictions can be marked with different attributes
+- This will cause API break, bit Since SVE APIs are `[Experimental]`, it should be find to do it.
+
+
+#### 3. Implicit (code generator tracks SM state)
+
+All AdvSimd/SVE APIs are valid becuase the JIT compiler automatically inserts the correct mode changes.
+
+Pros:
+- Everything is always valid
+
+Cons:
+- Bad performance due to mode switches will be hard to debug
 
 ### Code generation for Agnostic VL
 
