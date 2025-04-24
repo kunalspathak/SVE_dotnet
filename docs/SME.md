@@ -218,15 +218,20 @@ void Baz()
 Pros:
 - Having method attributes on a method will help code generator to insert accurate streaming state-change instructions at the required locations. Without such *hints* provided, the code generator's job will be difficult trying to guess and estimate the right location of inserting streaming state-change instructions. If the placement of such instructions is incorrect, then the best case scenario could be that we can see performance hit. This can happen when a state-change is not required, but code generator generated one. Since state-change instruction is expensive because it need to save/restore lot of registers, it will take a hit on performance. The worst case scenario of adding streaming state change instructions in wrong places can lead to executing a non-streaming instruction while the PE is set to be in streaming mode or executing a streaming instruction while the PE is NOT in streaming mode. Both of those can cause fault and crash the process. Having a method attribute makes the job of code generator easier.
 - With a method attribute for streaming, .NET developer can clearly design their application and encapsulate the streaming specific logic in a dedicated method.
-- As mentioned above, it is undefined behavior passing VL-dependent objects between methods of different streaming states. By having a method attribute, we could have a static analyzer that will check for such mistakes done by developers.
+- As mentioned above, it is undefined behavior passing VL-dependent objects between methods of different streaming states. By having a method attribute, we could have a static analyzer that will check for such mistakes done by developers. To ease the job of analyzers, SME or streaming compatible intrinsics can be moved into its own namespace like `System.Runtime.Intrinsics.Arm.Sve.Streaming` and if a method not marked with `[SME_STREAMING]` has any API from this namespace, analyzer can point out the errors to user.
 - There can be occurances where .NET developer forgets to add/remove the method attributes. Let us explore two situations that can arise:
   - a. A developer should have added `[SME_STREAMING]` attribute on method `A()`, but forgets to add one. In such case, code generator will treat `A()` as non-streaming method and will insert streaming state change instruction if there is: (1) SME intrinsic API or (2) Call to a method marked with `[SME_STREAMING]`.
   - b. A developer should have removed `[SME_STREAMING]` attribute from method `A()` because it no longer holds any streaming related code, but forget to do so. Such methods will continue to get treated as streaming methods and streaming-state change instruction will be added for entire code in the method. Several `SMSTOP, non-streaming code, SMSTART` can be batch combined by code generator to have just one `SMSTOP` at the beginning of the method and one `SMSTART` at the end of method. Note, this will be needed because the caller will see `A()` as streaming method and will add `SMSTART` before calling `A()` and `SMSTOP` after call is done.
   The take away from this is that with the presence of information of streaming state in which a method is supposed to run, code generator can much easily add the required streaming state instructions, even if the information is inaccurate or outdated sometimes.
-- Existing libraries methods invocation (streaming or non-streaming callees)  can be made easily from streaming or non-streaming callers without having to 
+- Existing libraries methods invocation (streaming or non-streaming callees)  can be made easily from streaming or non-streaming callers without having to think the streaming mode of the target method being invoked.
+
 Cons:
 - .NET developer wrongly puts or forgets to put the streaming attribute on a method. We have already seen above that this should not affect the correctness characteristics, but can affect performance of the methods.
 - Although we called out that static analyzers can be used to identify errors made by developers by passing VL-dependent objects between different streaming state methods, lot of projects might turn off static analyzers and for them, the behavior in such scenario is undefined. We could still utilize the method attribute information to analyze if VL-dependent arguments are passed or returned and add `throw InvalidProgramException` or something similar.
+
+There are few considerations with these options regarding some of the optimizations:
+1. Inlining must be disabled when callee is part of different streaming mode.
+2. Tail call optimization must be disabled when the callee is part of different streaming mode.
 
 #### 2. Expose StreamingON() and StreamingOFF()
 
@@ -422,31 +427,33 @@ Here is snapshot of VL agnostic code mode that will be used for various scenario
 
 Traditionally, the `Vector<T>` methods on Arm64 are mapped to corresponding methods of `Vector128` in IR and that way, NEON instructions are produced with 16-byte SIMD registers. With SVE and SME, we will continue to retain the `Vector<T>` methods in IR nodes and this will hint us to produce SVE/SME code using scalable registers. We will only enable the mapping of `Vector<T>` to scalable concept if underlying `VL > 16`, because when `VL==16`, NEON instructions are similar or faster compared to SVE instruction set.
 
-
 ### Restricting VL-dependent objects transfer between streaming states
 
-If we chose option# 1 of using method attributes like `"SME_STREAMING"`, code generator should be able to validate if arguments or return results of such method is VL-dependent objects and if yes, it will add a code to `throw InvalidProgramException` at the start of the method. If we prefer some other options, then we need to rethink on how to enforce such restriction.
+If we chose option# 1 of using method attributes like `"SME_STREAMING"`, code generator should be able to validate if arguments or return results of such method is VL-dependent objects and if yes, it will add a code to `throw InvalidProgramException` at the start of the method. There can be several scenarios in which VL-dependent objects may cross boundary between streaming states. Simplest one is `static Vector<T>` variable `a` can be accessed in streaming method. If we prefer some other options, then we need to rethink on how to enforce such restriction.
 
-### Exception Handling
-- unwinding and what to track
-- Care needs to be taken to restore `PSTATE.SM` and `PSTATE.ZA` when exception is thrown and during unwinding.
+### Runtime
 
-### Threads
-- How the state is tracked. The state is inherited I think?
-TODO
+Here are some raw notes of various .NET runtime components that need to be handled for SME and need more thinking.
 
-### GC
-- GC thread suspension
-- update `Vector<T>` size to scan objects on heap
-TODO
+#### Exception Handling
+- Saving and restoring of `PSTATE.SM` and `PSTATE.ZA` along with saving and restoring of `ZA` storage space.
+- Update unwinder to sync with that of Windows OS to bring in newer unwind codes relevant for SME instructions and `ZA`.
 
-### Misc
-- assembly routine, stubs
-TODO
+#### Threads
+- During process creation, `PSTATE.SM` state is cleared i.e. it starts with non-streaming mode. We can use the same concept when new threads are created.
 
-### .NET <--> PInvokes / System calls
-TODO
+#### GC
+- `Vector<T>` that is on stack can be different depending on the streaming mode that was active when it was saved. When GC scans the object, it needs to know the size of object to scan. Objects already have `size` component in the header, but additional metadata might be needed for VL-dependent objects created in streaming mode to make sure the correct size is read by GC. Correct size information might also be needed in various other components of runtime.
+- Need to deeper investigation on if `ZA` storage can hold GC references and if yes, how to make GC scan the storage space.
+- When suspended execution threads by GC are resumed, some threads might be in streaming mode while others might not. Need to check if there is any handling that needs to happen to make sure that their modes are restored correctly and they do not accidently execute code in wrong mode.
 
+
+#### Assembly routines and Stubs
+For simplicity, we will not use streaming in hand-written assemblies, but if there is a need, it should ensure to save / restore all the required streaming and ZA states.
+
+#### .NET <--> PInvokes / System calls
+
+Anytime we make calls including but not limited to Pinvokes, JIT helpers, stubs we will have to ensure to save scalable `Z` and predicate `P` registers.
 
 ### Representation of ZA storage in .NET APIs
 
@@ -465,6 +472,10 @@ Refer: https://arm-software.github.io/acle/main/acle.html#sme-instruction-intrin
 ```
 
 ### Debugger / Profiler
+
+- When stepping through a program, processor mode might be different from the one implied by the source code that is being debugged. This can be possible when a different As such, we can encounter crash if the code being debugged executes invalid instruction depending on the streaming mode.
+
+- Another interesting debugging scenario is how does offline debugging or debugging of dumps work. While debugging the dumps, when `SMSTART` instruction is encountered, it cannot execute the code after it on SME unit. As a resule the debugger need to save some kind of SSVL information and `PSTATE` information at such points. Debugger during stepping through will read this information and adjust the VL and ZA states accordingly. It might have to also save/restore contents of Z and ZA registers, but it is unclear how it will all connect.
 
 - Appropriate support of displaying the values of `Vector<T>` in debugger should be taken depending on the streaming mode in which they were created. Since VL-dependent objects should not cross streaming mode boundary, such variables should not change their sizes in debugger when streaming type is switched.
 
@@ -488,6 +499,7 @@ Refer: https://arm-software.github.io/acle/main/acle.html#sme-instruction-intrin
 
 - The Intrinsic unit tests that will be added for SME intrinsics should automatically test the switching of streaming modes. We can use [Armie](https://developer.arm.com/Tools%20and%20Software/Arm%20Instruction%20Emulator) to test some of the scenarios around switching streaming mode. Others can be validated on osx-arm64 M4+.
 - Coverage will be added in Antigen/Fuzzlyn to create methods that operate on streaming mode and that calls SME intrinsics. We will need osx-arm64 M4+ to get the coverage here for SME intrinsics.
+- `superpmi-replay` can be harnessed to produce SME code and verify the encoding and code generation works as expected.
 
 
 ## Hardware to prototype
@@ -526,10 +538,6 @@ This approach could be used as a stepping stone until an eventual SME API is imp
 - SME kernel docs: https://docs.kernel.org/arch/arm64/sme.html
 - LLVM register allocation for `ZA`: https://github.com/llvm/llvm-project/commit/c08dabb0f476e7ff3df70d379f3507707acbac4e
 
-### WIP
-
-- Agnostic VL support
-- Understanding SME's broader impact and design for .NET support
 
 ### TODO
 - Need to come up with list of SVE instructions that are valid vs. invalid in streaming mode
