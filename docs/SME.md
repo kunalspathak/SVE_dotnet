@@ -343,11 +343,11 @@ Cons:
 
 ### Code generation for Agnostic VL
 
-`Vector<T>` is the .NET's representation of vectors, whose length is known only at runtime. They represent scalable registers that were added as part of SVE feature in .NET 9. We will continue to represent them for SME feature as well. To support SME feature, .NET's code generator should have the needed support to understand VL agnostic concept as well as generate VL agnostic code.
+`Vector<T>` is the .NET's representation of vectors, whose length is known only at runtime. It's length represents non-streaming VL (NSVL) that was added as part of SVE feature in .NET 9. It's length will be represented as streaming VL (SVL) when program is running in SME. To support SME feature, .NET's code generator has to be updated to understand the semantics of dynamic (NSVL) and unknown (SVL) vector length. Further, the code generated should also take the streaming mode into account.
 
-TODO: Write a line or two to connect the "full" vs. "partial" VL agnostic with this example:
+To understand why it is important, let us take a simple example of `bool a = Vector.GreaterThanAll(b, c);`. Here, `b` and `c` are of type `Vector<float>`. The code checks if values in all lanes of `b` are greater than corresponding values of `c`. We will use `fcmgt` instruction that does the comparison and stores `1` in corresponding lanes of predicate register for which the condition matches. After that, we just need to check if all lanes of predicate registers are active to return true or false.
 
- Hence, `Vector<T>.Count` can return different result depending on whether the execution is happening in streaming mode or not. Care has to be taken by the code generator to make that no assumption is made for the size of VL, and if needed, it should be polled from the hardware using `rdvl` instruction. For example, on a 256B SVE machine, in a JIT scenario, to compare if all lanes of operand1 are greater than operand2, we would do something like this:
+In NSVL, where VL is fixed, we can compare the active lanes of predicate register with a "constant". In below assembly code, it is `#8`, assuming we are producing code for target, where VL=32.
 
 ```asm
     fcmgt   p0.s, p0/z, z8.s, z0.s  # Activate p0 lanes for which z8 > z0
@@ -357,64 +357,71 @@ TODO: Write a line or two to connect the "full" vs. "partial" VL agnostic with t
     cset    x0, eq                  # lanes satisfied z8 > z0
 ```
 
-However, the assumption of `#8` lanes will not work for SVE non-JIT scenario or for any of the SME scenarios. Hence, code generator should ensure that it emits VL agnostic code. Above, it would use `rdvl` instruction to find out the lanes count. So the code should look like this:
+However, if VL is not known during compilation or if we are executing in streaming mode, where VL can change, we cannot embed the VL value `#8` in the generated code. It has to use more sophisticated method of finding that value and then comparing the active lane count against that like `rdvl` instruction.
 
 ```asm
     fcmgt   p0.s, p0/z, z8.s, z0.s  # Activate p0 lanes for which z8 > z0
     ptrue   p1.s                  
     cntp    x0, p1, p0.s            # Count number of active lanes   
-    rdvl    x1, #4                  # No. of lanes of 4-byte elements
+    rdvl    x1, #4                  # Get count of 4-byte lanes
     cmp     x0, x1                  # If all 8 lanes are active means all
     cset    x0, eq                  # lanes satisfied z8 > z0
 ```
 
-Above code would work not only for SVE non-JIT scenarios but also regardless if the code is getting executed in streaming or non-streaming mode.
+For a simple example above, we can see the code generated should be different based on if VL is known during compilation or not. Depending on the circumstances under which we are compiling a method, we might or might not know VL. As such, we need to design a strategy of generating correct and optimal VL agnostic code.
 
-| Scalable Mode | Method type   | Code generation mode | VL agnostic code |
-|---------------|---------------|----------------------|-------------|
-| SVE           | non-streaming | JIT                  | partial     |
-| SVE           | non-streaming | NativeAOT            | full        |
-| SME           | non-streaming | JIT                  | partial     |
-| SME           | streaming     | JIT                  | full        |
-| SME           | both          | NativeAOT            | full        |
+#### Partial VL agnostic code
 
-In "partial" VL agnostic mode, following things can be done:
+In scenarios, where VL can be known during compilation (JIT) and it stays the same throughout the execution of the method getting compiled (non-streaming), we can take advantage of the VL size information in various optimization heuristics and code generation. As seen in the example above, if we know that VL= 32 bytes, we can embed the "4-byte lane count" constants in the target code, because the VL information will not change at that point in the program. I refer to this mode as "partial" VL agnostic code, because although, we will use scalable VL agnostic registers and instructions, we also make use of the VL information that we have during compilation.
+
+Here are some of the things that will be done, in "partial" VL agnostic mode:
+
 - Dependency on VL size can be taken and the size can be embedded in the generated code. (see above example).
-- VN takes advantage of constant data populated in vectors and can perform optimizations
-- Code to load constant data from RO section into `Vector<T>` is allowed.
-- VL variables can be present in "local" area and no rearrangement is needed.
-- Stack size can be calculated upfront and frame size can be embedded in the code even if some VL variables are saved on stack.
-- Other optimizations that takes Vector length in consideration like loop unrolling, struct block copy, etc. can be utilized.
+- Value numbering can pick the appropriate `simd*_t` to represent constant data `Vector<T>` holds and can assign VN to them.
+- Code to load constant data from RO section into `Vector<T>` is allowed because we would know exactly how many bytes can be loaded using SVE `ldr` instruction and how many residual bytes should be loaded by NEON/scalar instructions.
+- VL variables can be present in "local" area of stack frame and no special placement is needed for them. They will be accessed using SVE's [load](https://docsmirror.github.io/A64/2023-06/ldr_z_bi.html)/[store](https://docsmirror.github.io/A64/2023-06/str_z_bi.html) VL-agnostic instructions.
+- Stack size can be calculated upfront and frame size can be embedded in the code even if `Vector<T>` variables are saved on stack.
+- Other optimizations that takes Vector length in consideration like loop unrolling, struct block copy, etc. can be lighten up.
 
-In "full" VL agnostic mode, following things are prohibited and alternative approach will have to be taken:
-- Dependency on VL size and embedding in code will be prohibited. Wherever there is a need to get VL size, `rdvl` will be used to poll the vector length.
-- For `Vector<T>` constants, since we do not VL upfront, value numbering will assign `NoVN` to such constants and hence no value numbering related optimizations will be performed on them.
--  For cases where constant data needs to be populated in vectors, the existing mechanism of NEON `Vector128` will be repurposed.
-- VL variables should be present at the bottom of stack frame and all of them should be next to each other in single section. They will be then referenced by using [load](https://docsmirror.github.io/A64/2023-06/ldr_z_bi.html)/[store](https://docsmirror.github.io/A64/2023-06/str_z_bi.html) that is VL-agnostic.
-- Since stack size cannot be calculated upfront, instructions such as [AddVL](https://docsmirror.github.io/A64/2023-06/addvl_r_ri.html) will be used to create the stack frame.
+In code generator, we use `TYP_SIMD*` types to represent the types of vector values involved. For Arm64 target, valid values are `TYP_SIMD8` and `TYP_SIMD16`, that represents 8/16 bytes vector respectively. For x86 target, there are `TYP_SIMD16`, `TYP_SIMD32` and `TYP_SIMD64` to represent 16/32/64 bytes vectors respectively. For SVE, valid vector types are: `TYP_SIMD16`, `TYP_SIMD32`, `TYP_SIMD64`, `TYP_SIMD128` and `TYP_SIMD256`. For partial VL agnostic mode, we will repurpose the existing `TYP_SIMD32` and `TYP_SIMD64` of x86 and define 2 new types i.e. `TYP_SIMD128` and `TYP_SIMD256`. With that, we can reuse lot of the code and specially optimizations that are already present for Arm64 and x86. There is less code churn with that route. In partial agnostic VL mode, the size of `Vector<T>` will determine the type of `TYP_SIMD*` to be assigned to the `GenTree*` nodes.
+
+#### Full VL agnostic code
+
+In scenarios, where VL cannot be known during compilation (ahead of time compilation) or once known, can be different during the execution of the method (streaming). We cannot make any assumptions on the VL i.e. `Vector<T>` size information and cannot use it in optimization heuristics or targetted code. We will use a type `TYP_SIMDVL` for such variables and have `-1` size to it to indicate that size is unknown during compilation. The generated code should be fully agnostic to VL. It should not have any traces of dependency or assumptions about the VL. Hence, I refer this "fully" VL agnostic code.
+
+In "full" VL agnostic mode, following things will be prohibited for now. It may be possible to enable some or all of the optimizations, but we will leave it as lower priority and get to it, when other tasks for agnostic VL is done and we are confident that it works.
+- Dependency on VL size and embedding in code is not possible because it is not known during compilation time. Wherever there is a need to get VL size, instruction like `rdvl` will be used to poll the vector length (See example above).
+- If VL is not known during compilation, we won't be able to represent and store those constants in `simd*_t` of  valnue numbering. As such, value numbering will not be able to compare two `Vector<T>` values. Hence, we will assign `NoVN` for them and they won't be able to participate in further optimizations based on value numbering. For cases where constant data needs to be populated in vectors, the existing mechanism of NEON `Vector128` will be used.
+- We cannot have VL variables in the "locals" sections in full VL agnostic mode. If we have it such, the offsets of other non-VL locals will be unknown and we will not be able to access those variables from frame using fixed offset. Hence, such VL variables need to be present at the bottom of stack frame, batched together. They will be then referenced by using [load](https://docsmirror.github.io/A64/2023-06/ldr_z_bi.html)/[store](https://docsmirror.github.io/A64/2023-06/str_z_bi.html) VL-agnostic instructions.
+- If VL variables are present on the stack, the stack size cannot be calculated during compilation. In that case, instruction like [addvl](https://docsmirror.github.io/A64/2023-06/addvl_r_ri.html) will be used to create the stack frame.
 - Other optimizations that takes Vector length in consideration like loop unrolling, struct block copy, etc. will be disabled.
 
-Let us see how this support will be added for various scenarios viz. JIT, Crossgen2 and NativeAOT.
+#### Partial -> Full VL agnostic code
 
-#### JIT
+For crossgen2 scenarios, where we do ahead of time compilation without knowning the VL, but then re-compile methods, when VL can be found out, we can use "partial->full" agnostic VL code generation technique. What that means is, during AOT compilation, we will generate "full" agnostic VL code. During execution, when we rejit those methods, we will use the partial VL agnostic code, whenever applicable.
 
-From the table above, partial support of agnostic VL 
-`TYP_SIMD16`, `TYP_SIMD32`, `TYP_SIMD64`, `TYP_SIMD128` and `TYP_SIMD256`. No need of rearranging the locals in the stack
+#### Summary
 
-Most of the optimizations around VN will be disabled when "full" VL agnostic code is needed because the VL is unknown.
+To summarize, the VL agnostic code generation is about two properties:
+1. Can we find out VL up-front during method compilation?
+2. If yes, will the VL stay the same during execution of the portion of code that is getting compiled?
 
-Vector<T>.Length will be fixed but in nativeAOT, it will be `cntb` based.
+Here is snapshot of VL agnostic code mode that will be used for various scenarios.
 
-#### Crossgen2
+| Scalable Mode | Method type   | Code generation mode  | VL agnostic code  |
+|---------------|---------------|-----------------------|-------------------|
+| SVE           | non-streaming | JIT                   | partial           |
+| SVE           | non-streaming | NativeAOT             | full              |
+| SVE           | non-streaming | crossgen2             | full -> partial   |
+| SME           | non-streaming | JIT                   | partial           |
+| SME           | non-streaming | NativeAOT             | full              |
+| SME           | non-streaming | crossgen2             | full -> partial   |
+| SME           | streaming     | any                   | full              |
 
-Generate NEON to begin with, but rejit if VL >= 32 is available on the target machine.
+#### Vector<T> intrinsics
 
-#### NativeAOT
+Traditionally, the `Vector<T>` methods on Arm64 are mapped to corresponding methods of `Vector128` in IR and that way, NEON instructions are produced with 16-byte SIMD registers. With SVE and SME, we will continue to retain the `Vector<T>` methods in IR nodes and this will hint us to produce SVE/SME code using scalable registers. We will only enable the mapping of `Vector<T>` to scalable concept if underlying `VL > 16`, because when `VL==16`, NEON instructions are similar or faster compared to SVE instruction set.
 
-Will use `TYP_SIMDVL` to represent it. Most of the optimizations around VN will be disabled because the VL is unknown.
-
-- Locals need to be rearranged so they can be accecssed
-- 
 
 ### Restricting VL-dependent objects transfer between streaming states
 
