@@ -130,7 +130,21 @@ Let us look at another example [here](https://godbolt.org/z/84Ebrcn5q).
 
 ## .NET Runtime use cases
 
-TODO - talk about the use case
+SME is suitable for a number of PC/laptop use cases.
+
+- Used to accelerate Tensor
+Tensor uses lots of matrix manipulation. These could be simplified by using `Za` in SME.
+
+- Acceleration for existing SVE routines
+Arm hardware today is restricted to 128bits. SME implementations generlaly implement wider vector lengths.
+Any routines written in SVE could be easily modified to run in streaming mode. This assumes the routine only uses APIs valid in streaming mode. This would give a performance boost due to the wider vector lengths.
+
+- Other AI inference
+
+- Any other workloads requiring large matrix manipulation.
+
+SME is not of use in server scenarios due to it not being available on sever hardware.
+
 
 ## .NET Runtime design
 
