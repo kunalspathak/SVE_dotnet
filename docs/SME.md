@@ -238,6 +238,7 @@ Pros:
 Cons:
 - .NET developer wrongly puts or forgets to put the streaming attribute on a method. We have already seen above that this should not affect the correctness characteristics, but can affect performance of the methods.
 - Although we called out that static analyzers can be used to identify errors made by developers by passing VL-dependent objects between different streaming state methods, lot of projects might turn off static analyzers and for them, the behavior in such scenario is undefined. We could still utilize the method attribute information to analyze if VL-dependent arguments are passed or returned and add `throw InvalidProgramException` or something similar.
+- It will not be possible to call exisiting library routines whilst in streaming mode, unless those routines are explicitly marked as `SME_STREAMING_COMPATIBLE`. This could cause a cascade as users raise issues to request more and more routines to be marked as streaming compatible.
 
 There are few considerations with these options regarding some of the optimizations:
 1. Inlining must be disabled when callee is part of different streaming mode.
@@ -333,7 +334,7 @@ Cons:
 - It may be difficult to ensure all error cases are captured correctly.
 
 
-#### 5. Code generator tracks SM state
+#### 5. Implicit (code generator tracks SM state)
 
 Instead of relying on the developer to specify places where streaming mode should be changed, code generator can take the heavy burden of tracking it implicitely. It can then also be made responsible for injecting appropriate streaming state change instructions at right place. Every time we see a call to SME intrinsics, `SMSTART` can be inserted and after that, `SMSTOP`. Several of these state changing instructions can be combined and performed in batch.
 
@@ -345,7 +346,6 @@ Cons:
 - Mistakes in injecting streaming state change instructions at right places can not only cause correctness issues, but also crashes.
 - With various optimizations, we might end up injecting streaming start in a branch, but do not add corresponding stop. This can lead to undefined behavior or crash the program.
 - Calling non-SME code in between SME intrinsic calls will result in the state switching even though is not required resulting in performance loss:
-
   ```c#
   // Streaming mode started
   SME.method1();
@@ -355,6 +355,56 @@ Cons:
   SME.method2();
   // Streaming mode stopped
   ```
+- Mixing non-streaming and streaming APIs in the same method would be valid but would probably result in bad performance. It will not be obvious to a user why this is happening.
+
+
+### Missing APIs in streaming mode
+
+There are a number of APIs that are not avilable when in streaming mode. This is mostly because these instruction would mostly likely have bad performance characteristics if implemented on the SME unit.
+
+The list includes instructions in both AdvSimd and SVE:
+  - SVE gather loads / scatter stores
+  - SVE Non-temporal memory access
+  - SVE First faulting loads and the FFR register
+  - Most AdvSimd instructions
+  - TODO: more?
+
+There are a number of ways this could be handled:
+
+#### 1. Subclassing
+
+Put all non-streaming APIs into a separate class.
+For example `SVENonStreaming.GatherLoad()` or `SVE.NonStreaming.GatherLoad()`
+
+Pros:
+- It's clear which methods are valid
+
+Cons:
+- There would have to be an API break. Existing AdvSimd routines would have to be moved into `AdvSimd.NonStreaming`
+- Additional complication for AdvSimd/SVE users who don't use or know about SME. I will not be clear why is a given routine in a slightly different class.
+- If `FEAT_SME_FA64` were ever implemented then all AdvSimd/SVE APIs would be valid on that platform. The simple solution here would to still treat those APIs as invalid.
+- A future Arm architecture extension could introduce more restrictions, or have a different set of restrictions.
+
+#### 2. MethodAttribute
+
+When using the MethodAttribute implementation, all SVE and AdvSimd APIs that are valid in streaming mode would be marked as streaming compatible.
+
+Pros:
+- It will be clear when looking at the API definition which methods are valid for SME.
+- Any future changes in restrictions can be marked with different attributes
+
+Cons:
+- Adding the attributes to exisiting APIs may still cause an API break?
+
+#### 3. Implicit (code generator tracks SM state)
+
+All AdvSimd/SVE APIs are valid becuase the JIT compiler automatically inserts the correct mode changes.
+
+Pros:
+- Everything is always valid
+
+Cons:
+- Bad performance due to mode switches will be hard to debug
 
 ### Code generation for Agnostic VL
 
