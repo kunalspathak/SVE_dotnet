@@ -1,36 +1,58 @@
 
 # <u>S</u>calable <u>M</u>atrix <u>E</u>xtension
 
-## Introduction
+## Overview
 
-SME is Arm's architecture extension that provides optimal support for matrix operations that is crucial in AI workloads. The key features that comes in SME are:
-- Streaming SVE mode
-- Matrix multiplication / outer product between two vectors
-- Matrix "tile" storage
-- Manipulate data (load, store, insert) in tiles
+The Scalable Matrix Extension (SME) is an ARM architecture extension designed to provide optimal support for matrix operations, which are critical in AI workloads. Its key features include:
+
+- **Streaming SVE Mode**: Enhanced execution environment for vector operations.
+- **Matrix Multiplication**: Support for outer product operations between two vectors.
+- **Matrix Tile Storage**: Capability to store and manipulate data in tiles.
+- **Data Manipulation**: Operations such as load, store, and insert within tiles.
 
 
 ## Streaming SVE
 
-### Concept
+### Concept and Background
 
-SME introduces two fundamental concepts of "Streaming mode" and "ZA storage" that are crucial to operate on AI workloads. 
+SME introduces two key concepts essential for AI workloads:
 
-To understand the "Streaming mode", let us revisit some background about Scalable Vector Extension (SVE).
-The SVE1 and SVE2 introduced the concept of "scalable vector registers". The size of these register or in other words, vector length (VL) can vary between 16B ~ 256B, depending on the hardware vendor. For e.g. Microsoft Azure's Cobalt offering the VL as 16B, Amazon AWS's Graviton3 has 32B while Fujitsu A64FX's Fugaku supercomputer has 64B vector length. During compilation, the VL can be known by querying the OS APIs (JIT) or by specifying the target hardware's VL upfront (AOT). Let us call the VL in SVE1/SVE2 as "non-streaming VL" or NSVL. SME introduces the concept of "streaming mode" where a program can execute in an environment in which the VL can be different than NSVL. The VL in streaming mode is typically referred as Scalable Vector Length or SVL. Since Arm architecture allows SVE1/SVE2/SME features to be available as part of same hardware, it means at one point, a program can be operating on a NSVL, while other times, it can be operating on SVL. There are instructions to turn the streaming mode ON/OFF. To add to the complexity, SME core is a separate unit on a chip (and hence is allowed to have different VL), some SVE1/SVE2/NEON instructions are invalid when the program is running in "Streaming mode". Much care is needed to ensure that developer is not executing non-streaming code while streaming mode is ON. 
+1. **Streaming Mode**: Allows a program to operate with a scalable vector length (SVL) distinct from the non-streaming vector length (NSVL).
+2. **ZA Storage**: Provides specialized storage for matrix tiles.
 
-SME introduces the concept of "streaming mode". A program can enter or leave streaming mode via the `SMSTART`/`SMSTOP` instructions. Most other SME instructions can only be run inside streaming mode. In all current implementations, the SME core is a separate unit on a chip which is switched to when entering streaming mode. Since this is a separate unit, the VL can be different than NSVL. The VL in streaming mode is typically referred as Scalable Vector Length or SVL. In addition, some SVE1/SVE2/NEON instructions are invalid when the program is running in "Streaming mode".
+### Non-Streaming vs. Streaming Mode
 
-Since Arm architecture allows SVE1/SVE2/SME features to be available as parts of the same hardware, it means at one point, a program can be operating on a NSVL, while other times, it can be operating on SVL. Much care needs to be taken to ensure that non-streaming code does not get executed when streaming mode is ON. 
+In SVE1 and SVE2, the vector length (VL) is scalable and can vary between 16B and 256B, depending on the hardware. This is referred to as **NSVL**. Examples include:
+- Microsoft Azure's Cobalt: VL = 16B
+- Amazon AWS's Graviton3: VL = 32B
+- Fujitsu A64FX Fugaku: VL = 64B
+
+**Streaming Mode**, introduced by SME, operates with a distinct VL known as **SVL**. Some key differences include:
+- The SME core is a separate hardware unit, supporting different VLs for NSVL and SVL.
+- Transitions to and from Streaming Mode are controlled using the `SMSTART` and `SMSTOP` instructions.
+- Certain SVE1, SVE2, and NEON instructions are invalid in Streaming Mode.
+
+### Transitioning Between Modes
+
+A program can enter or leave Streaming Mode using the following:
+- `SMSTART`: Activates Streaming Mode.
+- `SMSTOP`: Deactivates Streaming Mode and restores non-streaming operations.
+
+**Important Considerations**:
+- Transitioning between modes incurs a performance penalty, as register states must be saved and restored.
+- Ensure non-streaming instructions are not executed while Streaming Mode is active.
+
+The `FEAT_SME_FA64` feature, if present, integrates the SME unit directly onto each CPU core (referred to as the "Mesh" configuration on the right). In this configuration, no instructions become invalid. However, this setup may not be implemented for server SKUs due to the significant silicon area required for an SME unit on every core. This implementation detail still requires confirmation from Arm.
+
+An alternative configuration involves a single shared SME unit across all or a subset of CPU cores (referred to as the "DSU" configuration on the left). This setup is more suited for PCs, laptops, and mobile devices. The M4 processor is currently the only production-ready device with SME support, but it includes SME functionality without SVE capabilities in its main CPU cores.
 
 ![alt text](image-3.png)
 Image credit: https://www.youtube.com/watch?v=jrniGW_Hzno
 
-`FEAT_SME_FA64` feature, if present will have SME unit on the CPU itself (configuration on the right) and hence no instructions become illegal, but it might not get implemented for server SKUs because of space it takes on the silicon for SME unit on every core. This needs confirmation though from Arm. That leaves us with the option of shared SME for all or portion of CPUs (configuration on the left) and that might be more for PC, laptop, mobile devices. M4 is the only production ready device, but that just have SME and no SVE feature.
 
-The standard SME setup is one shared SME unit between all or subset of CPUs (configuration on the left). That is aimed more for PC, laptop, and mobile devices. M4 is the only production ready device - that just has SME and but no SVE features in the main CPU cores.
+### ZA Storage
 
-The second concept that SME introduces is `ZA storage` which is a 2D matrix of size `N x N`, where `N` is SVL (Note: it is SVL and not NSVL). This matrix is only available in streaming mode and the instructions to read/write/manipulate the ZA storage need to be executed in streaming mode. Just like NEON registers or Scalable registers, the contents of ZA storage matrix can be interpreted as 1-byte `B`, 2-bytes half `H`, 4-bytes single `S`, 8-bytes double `D` or 16-bytes quad `Q`.
+The second key concept introduced by SME is **ZA Storage**, which is a 2D matrix of dimensions `N x N`, where `N` represents the Scalable Vector Length (SVL) (note: this is SVL and not NSVL). This matrix is exclusively accessible in Streaming Mode, and any instructions to read, write, or manipulate the ZA Storage must be executed within Streaming Mode. Similar to NEON registers and Scalable Vector Registers, the contents of the ZA Storage matrix can be interpreted in various data types, including 1-byte (`B`), 2-byte half (`H`), 4-byte single (`S`), 8-byte double (`D`), or 16-byte quad (`Q`).
 
 ### Terminology
 
@@ -40,30 +62,32 @@ The second concept that SME introduces is `ZA storage` which is a 2D matrix of s
 - SVL: Streaming Vector Length. Length of vector when program is operating in streaming mode.
 - VL-dependent objects: Objects whose size is different in streaming vs. non-streaming mode.
 
-## Streaming mode
-
-The processor can be in streaming mode or in non-streaming mode. Switching the PE to/from streaming mode has two outcomes:
-- The length of SVE vectors and predicates switches. `NSVL` for non-streaming mode, `SVL` for streaming mode.
-- Some instructions can operate only in streaming mode, referred to as "streaming instructions", while some can operate only in non-streaming mode, referred to as "non-streaming instructions". Finally, some can operate in either of the two modes and referred as "streaming compatible instructions".
-
-A program is invalid and will have undefined behavior if "streaming instructions" are run in non-streaming mode or vice-versa.
-
-
 ## C++ ACLE
 
 ### Streaming and Non Streaming functions
 
-<i>In C++, changes of mode are automatic based on whether a function is a streaming or non-streaming function. It is the compiler’s responsibility to insert the necessary instructions. There are no C++ intrinsics that map directly to `SMSTART` and `SMSTOP`.</i>
+In C++, mode transitions between streaming and non-streaming functions are handled automatically based on the function's attributes. The compiler is responsible for inserting the necessary instructions, such as `SMSTART` and `SMSTOP`. Notably, there are no C++ intrinsics that directly correspond to these instructions.
 
-C++ defines function attributes `__arm_streaming` which says that everything in this function should be streaming instructions only and `__arm_streaming_compatible` which says that it only uses the subset of instructions that are valid in both streaming and non-streaming modes. By default (if no attribute is specified), a function is considered to be a non-streaming mode function.
+C++ provides the following function attributes to define compatibility with Streaming Mode:
+- `__arm_streaming`: Specifies that all instructions within the function must be compatible with Streaming Mode.
+- `__arm_streaming_compatible`: Indicates that the function uses only instructions valid in both streaming and non-streaming modes.
+- **Default Behavior**: If no attribute is specified, the function is treated as a non-streaming mode function.
 
-![alt text](image-2.png)
+![Function Attributes Overview](image-2.png)
 
-It is the responsibilty of the caller to ensure the SME state is correct before function entry and then restore prior state after exit. The callee always assumes SME state is valid on entry.
+### SME State Management
 
-If there is a function call from streaming to non-streaming, or from non-streaming to streaming the compiler should inject the required `SMSTART` and `SMSTOP` instructions around the call. When calling streaming and non-streaming functions from streaming compatible functions, the compiler injects code to check the current SME state and switch if required. When calling streaming compatible functions the compiler never needs to check or change modes.
+It is the caller's responsibility to ensure the SME state is properly configured before a function is entered and to restore the previous state upon function exit. The callee assumes that the SME state is valid when the function is invoked.
 
-![alt text](image-4.png)
+### Compiler Behavior
+
+- **Transition Handling**: 
+  - When transitioning from a streaming function to a non-streaming function (or vice versa), the compiler automatically injects the required `SMSTART` or `SMSTOP` instructions around the call.
+- **Streaming-Compatible Functions**:
+  - When calling streaming and non-streaming functions from a streaming-compatible function, the compiler inserts code to check the current SME state and switch modes if necessary.
+  - For streaming-compatible functions, no mode-checking or state-switching is required.
+
+![Transition Handling Example](image-4.png)
 
 Let us take a look at [this example](https://godbolt.org/z/hxehqv6eG). 
 
@@ -108,8 +132,6 @@ void sc_sme_func(void) __arm_streaming_compatible{
 }
 ```
 
-Note how the SME state is changed before and after calls to the external functions.
-
 ## ABI
 
 ### Saving / Restoring registers
@@ -127,56 +149,53 @@ Let us look at another example [here](https://godbolt.org/z/84Ebrcn5q).
 
 - `z8~z23` and `p4~p15` are saved/restored before streaming mode state changes. The incurs significant performance penalty and hence changing streaming state frequently is not advisable.
 
+## .NET Runtime Use Cases
 
-## .NET Runtime use cases
+The Scalable Matrix Extension (SME) is well-suited for various PC and laptop use cases, particularly those involving matrix-heavy computations and AI workloads. Below are the primary use cases:
 
-SME is suitable for a number of PC/laptop use cases.
+- **Tensor Acceleration for Matrix Manipulation**: SME can simplify and accelerate tensor operations by utilizing the `ZA` storage for efficient matrix manipulation.
 
-- Accelerate Tensor for matrix manipulation. These could be simplified by using `ZA` in SME.
+- **Enhancing SVE Routines**: While current Arm hardware is limited to 128-bit vector lengths, SME implementations often support wider vector lengths. Existing routines written in SVE can be modified to run in Streaming Mode, provided they only use APIs valid in this mode. Wider vector lengths in SME provide a significant performance boost.
 
-- Acceleration for existing SVE routines: Arm hardware today is restricted to 128bits. SME implementations generlaly implement wider vector lengths. Any routines written in SVE could be easily modified to run in streaming mode. This assumes the routine only uses APIs valid in streaming mode. This would give a performance boost due to the wider vector lengths.
+- **AI Inference Workloads**: SME is ideal for accelerating AI inference tasks that rely heavily on matrix operations.
 
-- Other AI inference
+- **Large-Scale Matrix Manipulation**: SME is beneficial for workloads requiring extensive matrix computations, such as those found in the [Tensor SDK](https://learn.microsoft.com/en-us/dotnet/api/system.numerics.tensors.tensor-1?view=net-9.0-pp).
 
-- Any other workloads requiring large matrix manipulation, e.g. in [Tensor SDK](https://learn.microsoft.com/en-us/dotnet/api/system.numerics.tensors.tensor-1?view=net-9.0-pp).
+### Limitations
 
-SME is not of use in server scenarios due to it not being available on sever hardware.
+SME is currently not applicable to server scenarios, as it is not available on server-grade hardware.
 
 ## .NET Runtime design
 
-To add the SME support in .NET Runtime, there are lot of considerations that need to be evaluated, out of which the primary ones are:
+To add support for the Scalable Matrix Extension (SME) in the .NET Runtime, several key considerations need to be carefully evaluated. Below are the primary aspects that must be addressed:
 
-- Switch streaming state automatically
-- Runtime aspects
-  - Agnostic VL in code generator
-  - Exception Handling
-  - Threads and SME state
-  - NativeAOT and crossgen2 handling
-  - .NET <--> PInvoke/System calls
-  - Debugger and Profiler
-  - Testability
-- Surfacing `ZA` storage using .NET APIs, if there is a need (which is unlikely).
+1. Automatic Streaming State Switching
+2. Runtime Aspects
+   - Agnostic Vector Length (VL) code generation
+   - Exception Handling
+   - Threads and SME state
+   - NativeAOT and crossgen2 handling
+   - .NET <--> PInvoke/system calls
+   - Diagnostics - debugger and profiler
+   - Testability
+3. Surfacing `ZA` storage using .NET APIs, if there is a need (which is unlikely).
 
 Let us walk through each of the above points in depth.
 
 ### Streaming state change
 
-As described above, C++ ACLE defines function atttributes like `arm_streaming` and `arm_streaming_compatible`. These attributes eases the compiler to decide if it needs to turn streaming mode ON or OFF. To support SME in .NET, we need to develop an ability to switch between streaming states, either automatically by the compiler itself or provide that control to the .NET developer. Let us go over some of the options we can make it happen and their pros and cons.
+To support the Scalable Matrix Extension (SME) in the .NET Runtime, we need to develop a mechanism for managing streaming state transitions. This can be done either automatically by the compiler or manually by giving control to the .NET developer. Below, we explore various approaches, along with their pros and cons.
 
 #### 1. MethodAttribute
 
-The first option to be considered would be to do something similar to what ACLE proposes for C++ code. Introduce a method attributes `[SME_Streaming]` and `[SME_Streaming_Compatible]` corresponding to `arm_streaming` and `arm_streaming_compatible` respectively. Having these method attributes, user can use them on methods that will have contain the code related to SME and streaming.
+This approach mirrors the C++ ACLE design, introducing method attributes `[SME_Streaming]` and `[SME_Streaming_Compatible]` to indicate the expected streaming mode of a method. These attributes allow the code generator to insert appropriate streaming state change instructions. Having these method attributes, user can use them on methods that will have contain the code related to SME and streaming.
 
-The Code generator can inspect these attributes and accordingly add relevant streaming state change instructions at appropriate places in caller of such methods, if applicable. In below example, streaming state change is inserted in `Bar()` method for calling non-streaming `Baz()` method from it.
+In the example below, streaming state change instructions are inserted into the `Bar()` method when it calls the non-streaming `Baz()` method. 
 
-The Code generator could also optimize the number of times it need to change between streaming states as seen in `Baz()`, a non-streaming method below. Instead of switching state twice, first for `Foo()` and then for `Bar()`, it would do it just once. Although note that this is not done today for C++ in Clang at the highest optimisation level.
+The code generator can also optimize the number of streaming state changes required. For instance, in the `Baz()` method (a non-streaming method), instead of switching states twice (once for `Foo()` and again for `Bar()`), the generator could consolidate these transitions into a single switch. However, it is worth noting that this optimization is not currently implemented at the highest optimization level in C++ compilers like Clang.
 
-A method that has `[SME_Streaming_Compatible]` will insert streaming state change instructions if the current state is not in the desired streaming state expected by the callee. In  `CompatMethod()`, we see the check that would be inserted by the code generator before calling `Foo()` or `Baz()`. Moreover, the caller of such methods do not have to add the streaming state change instructions before and after the call, because compatible methods will do it for them, as just described.
+When a method is annotated with `[SME_Streaming_Compatible]`, the code generator inserts streaming state change instructions only if the current state is not already in the desired streaming state expected by the callee. For example, in `CompatMethod()`, the code generator inserts checks before calling `Foo()` or `Baz()` to ensure the state is correct. Moreover, methods marked as streaming-compatible handle state transitions internally, meaning their callers do not need to add state change instructions before and after the call.
 
-Care has to be taken by the code generator while inlining streaming method in a non-streaming method and vice-versa. By adding required streaming state instructions at corresponding places, it should be possible to let inlining happen cross streaming method states.
-Lastly, while compiling streaming methods for target that does not have SME support, `throw PlatformNotSupportedException` can be inserted at the top of the method.
-
-With this model, all SME intrinsic APIs will be marked as `[SME_Streaming]` and all the SVE/SVE2 APIs that work in streaming mode too, will be marked as `[SME_Streaming_Compatible]`. Calling `[SME_Streaming_Compatible]` intrinsic APIs from a non-streaming methods, will not incur any streaming state change penalty and hence existing .NET libraries code, that use SVE APIs will not get impacted.
 
 ```c#
 [SME_Streaming]
@@ -221,61 +240,118 @@ void CompatMethod()
 }
 ```
 
-Pros:
-- Having method attributes on a method will help code generator to insert accurate streaming state-change instructions at the required locations. Without such *hints* provided, the code generator's job will be difficult trying to guess and estimate the right location of inserting streaming state-change instructions. If the placement of such instructions is incorrect, then the best case scenario could be that we can see performance hit. This can happen when a state-change is not required, but code generator generated one. Since state-change instruction is expensive because it need to save/restore lot of registers, it will take a hit on performance. The worst case scenario of adding streaming state change instructions in wrong places can lead to executing a non-streaming instruction while the PE is set to be in streaming mode or executing a streaming instruction while the PE is NOT in streaming mode. Both of those can cause fault and crash the process. Having a method attribute makes the job of code generator easier.
-- With a method attribute for streaming, .NET developer can clearly design their application and encapsulate the streaming specific logic in a dedicated method.
-- As mentioned above, it is undefined behavior passing VL-dependent objects between methods of different streaming states. By having a method attribute, we could have a static analyzer that will check for such mistakes done by developers. To ease the job of analyzers, SME or streaming compatible intrinsics can be moved into its own namespace like `System.Runtime.Intrinsics.Arm.Sve.Streaming` and if a method not marked with `[SME_Streaming]` has any API from this namespace, analyzer can point out the errors to user.
-- There can be occurances where .NET developer forgets to add/remove the method attributes. Let us explore two situations that can arise:
-  - a. A developer should have added `[SME_Streaming]` attribute on method `A()`, but forgets to add one. In such case, code generator will treat `A()` as non-streaming method and will insert streaming state change instruction if there is: (1) SME intrinsic API or (2) Call to a method marked with `[SME_Streaming]`.
-  - b. A developer should have removed `[SME_Streaming]` attribute from method `A()` because it no longer holds any streaming related code, but forget to do so. Such methods will continue to get treated as streaming methods and streaming-state change instruction will be added for entire code in the method. Several `SMSTOP, non-streaming code, SMSTART` can be batch combined by code generator to have just one `SMSTOP` at the beginning of the method and one `SMSTART` at the end of method. Note, this will be needed because the caller will see `A()` as streaming method and will add `SMSTART` before calling `A()` and `SMSTOP` after call is done.
-  The take away from this is that with the presence of information of streaming state in which a method is supposed to run, code generator can much easily add the required streaming state instructions, even if the information is inaccurate or outdated sometimes.
-- Existing libraries methods invocation (streaming or non-streaming callees)  can be made easily from streaming or non-streaming callers without having to think the streaming mode of the target method being invoked.
+**API Marking Model**
 
-Cons:
-- .NET developer wrongly puts or forgets to put the streaming attribute on a method. We have already seen above that this should not affect the correctness characteristics, but can affect performance of the methods.
-- Although we called out that static analyzers can be used to identify errors made by developers by passing VL-dependent objects between different streaming state methods, lot of projects might turn off static analyzers and for them, the behavior in such scenario is undefined. We could still utilize the method attribute information to analyze if VL-dependent arguments are passed or returned and add `throw InvalidProgramException` or something similar.
+- All SME intrinsic APIs will be annotated with `[SME_Streaming]`.
+- All SVE/SVE2 APIs that are valid in streaming mode will be marked as `[SME_Streaming_Compatible]`.
 
-There are few considerations with these options regarding some of the optimizations:
-1. Inlining must be disabled when callee is part of different streaming mode.
-2. Tail call optimization must be disabled when the callee is part of different streaming mode.
+This model ensures that calling `[SME_Streaming_Compatible]` intrinsics from non-streaming methods does not incur any streaming state change penalties. As a result, existing .NET libraries that use SVE APIs remain unaffected and continue to operate efficiently.
+
+**Pros:**
+- **Accurate Code Generation**:
+   - Method attributes provide clear "hints" to the code generator, enabling it to accurately insert streaming state-change instructions at the required locations.
+   - Without these attributes, the code generator would need to estimate the appropriate placement of state-change instructions, which could lead to:
+     - **Best Case**: A performance hit due to unnecessary state changes (state changes are expensive as they involve saving/restoring many registers).
+     - **Worst Case**: Incorrect placement could result in:
+       - Executing a non-streaming instruction while the processor is in streaming mode.
+       - Executing a streaming instruction while the processor is in a non-streaming mode.
+       - Both scenarios can cause faults and crash the process.
+   - Having attributes simplifies this process, reducing the likelihood of such issues.
+
+- **Clear Application Design**:
+   - Developers can clearly encapsulate streaming-specific logic within dedicated methods, improving code organization and readability.
+
+- **Static Analysis Support**:
+   - Passing VL-dependent objects between methods of different streaming states is undefined behavior. Method attributes facilitate the use of static analyzers to catch such mistakes.
+   - SME or streaming-compatible intrinsics can be placed in a dedicated namespace (e.g., `System.Runtime.Intrinsics.Arm.Sve.Streaming`), allowing analyzers to flag errors when a method without the `[SME_Streaming]` attribute uses APIs from this namespace.
+
+- **Handling Developer Oversights**:
+   - **Scenario A**: A developer forgets to add the `[SME_Streaming]` attribute to a streaming method (`A()`):
+     - The code generator treats `A()` as a non-streaming method but still inserts state-change instructions if:
+       1. The method contains SME intrinsic APIs.
+       2. The method calls another method marked with `[SME_Streaming]`.
+   - **Scenario B**: A developer forgets to remove the `[SME_Streaming]` attribute from a method (`A()`) that no longer contains streaming logic:
+     - The method continues to be treated as streaming, and state-change instructions are added for the entire method.
+     - The code generator can optimize by batching multiple state-change instructions into a single `SMSTOP` at the beginning and a single `SMSTART` at the end of the method.
+   - **Takeaway**: Even if the attribute information is inaccurate or outdated, the code generator can still manage to insert the necessary instructions effectively.
+
+- **Seamless Library Integration**:
+   - Invoking methods from existing libraries (streaming or non-streaming) remains straightforward. Developers do not need to worry about the streaming mode of the target method being invoked.
+
+**Cons:**
+- **Developer Errors**:
+   - Developers might incorrectly apply or forget to apply the streaming attribute to a method. While this does not impact correctness, it can degrade performance.
+
+- **Static Analyzer Limitations**:
+   - Although static analyzers can identify errors, many projects may disable static analysis, leaving such issues undetected.
+   - To mitigate this, method attributes could also be used to analyze VL-dependent arguments and add runtime checks (e.g., `throw InvalidProgramException`) for safety.
+
+**Special Considerations**
+
+- **Inlining Across States**: The code generator must handle inlining carefully when a streaming method is inlined within a non-streaming method, or vice versa. By inserting the necessary streaming state change instructions at the correct points, it should still be possible to enable inlining across streaming and non-streaming methods. Sometimes, inlining might have to be disabled when callee is not in same streaming type mode as the caller.
+- **Tail call optimizations**: Similar to inlining, tail call optimizations might have to get disabled when caller and callee are not in similar streaming mode.
+- **Platform Compatibility**: When compiling streaming methods for platforms that lack SME support, the code generator can insert a `throw PlatformNotSupportedException` at the beginning of the method to ensure compatibility.
+
+
 
 #### 2. Expose StreamingON() and StreamingOFF()
 
-Alternate approach to method attributes is exposing streaming state change instructions as intrinsics like `StreamingON()` and `StreamingOFF()`. This will allow developers to drive the streaming mode and code generator will just insert corresponding instructions at relevant places in the code.
+An alternative to using method attributes is exposing streaming state change instructions as intrinsics, such as `StreamingON()` and `StreamingOFF()`. This approach allows developers to explicitly control streaming mode transitions, while the code generator simply inserts the corresponding instructions at the specified locations.
 
-Pros:
-- The benefit of exposing these as .NET intrinsics is that developer have fine grain control over the places in their code where they want to start and stop streaming.
-- .NET developers workflow remains same (unlike #1 above, where they had to add an attribute on the method).
-- No work needed for code generation in analyzing the placement of streaming state change instructions. The only thing that code generator would be responsible for is tracking the registers that should be saved and restored before/after the invocation of these intrinsics.
+**Pros:**
+- **Fine-Grained Control**:
+   - Developers have precise control over where and when to enable or disable streaming mode in their code.
 
-Cons:
-- This option, however, gives lot more power to .NET developers than needed, and there are high chances that it can go wrong easily. For example, they can have `StreamingON()` and unknowingly write code that generates NEON instructions, while streaming is ON. This can cause fault and crash their process.
-- Just like method attributes case, developers can forget to call one of these intrinsics and that can result in catastropic failure. While in case of method attributes scenario, code generator would protect the code by adding appropriate streaming state change instructions, nothing of that sort will happen for this option. Not only the code will be performance ineffecient but will also led to crashes - calling an SME API that is only valid in streaming mode would cause an illegal instruction exception at runtime.
-- Even if the developer is careful in adding `StreamingON()` and `StreamingOff()` APIs, there will be just too many of them scattered around in the code and they will have to remember what the mode is at the point of writing their code to make sure counterpart API is called. 
-- Sometimes, we could also see code like and there is no way to flag such errors to users.
-  ```c#
-  StreamingOn();
-  ...
-  if (condition)
-  {
-    StreamingOff();
-  }
-  ...
-  StreamingAPI(); // is this valid?
-  StreamingOff();
-  ```
-- Accessing VL-dependent objects that crosses streaming state will remain unsolved with this approach.
-  ```c#
-  Vector<int> a = ... // NSVL
-  StreamingOn();
-  ... = a;        // undefined
-  StreamingOff();  
-  ```
-- Calling functions whilst in streaming mode adds additional complexity for the user to track. The user will not know which library routines are safe to call whilst in streaming mode. Is it safe to call `System.Console.WriteLine()` whilst in streaming mode?
+- **Unchanged Workflow**:
+   - Unlike method attributes, this approach does not require developers to annotate methods, keeping their workflow and coding style consistent.
 
-#### 3. RAII style `using`
+- **Simplified Code Generator**:
+   - The code generator does not need to analyze or infer placement of streaming state change instructions. It only needs to ensure proper saving and restoring of registers before and after the intrinsics are invoked.
 
-Another option to expose the streaming state change would be to give it "Resource Acquisition is initialization" semantics or RAII. To do that, we can introduce a placeholder class in `System.Runtime.Intrinsics.Arm.Sve` called `StreamingMode`. The lifetime of this class will dictate the entering and leaving of streaming mode.
+
+**Cons:**
+- **High Risk of Developer Errors**:
+   - This approach gives developers more control than necessary, increasing the likelihood of mistakes:
+     - For example, a developer might call `StreamingON()` and inadvertently write code that generates NEON instructions, which are invalid in streaming mode. This could cause the program to crash.
+
+- **Forgotten Intrinsics**:
+   - Developers may forget to call `StreamingON()` or `StreamingOFF()`, leading to catastrophic failures. Unlike the method attributes approach, there is no safety mechanism in place to insert missing state change instructions automatically.
+   - Calling an SME API that is valid only in streaming mode without enabling streaming mode would result in an illegal instruction exception at runtime.
+
+- **Scattered Intrinsics**:
+   - Developers will need to manually scatter `StreamingON()` and `StreamingOFF()` calls throughout their code, making it harder to maintain. They must also remember the current mode at every point in their code to ensure counterpart APIs are called correctly.
+
+- **Undefined Behavior in Conditional Logic**:
+   - Conditional execution can lead to undefined behavior, and there is no straightforward way to flag such issues:
+     ```c#
+     StreamingOn();
+     ...
+     if (condition)
+     {
+       StreamingOff();
+     }
+     ...
+     StreamingAPI(); // Is this valid?
+     StreamingOff();
+     ```
+
+- **VL-Dependent Object Issues**:
+   - Accessing VL-dependent objects (e.g., vectors) across streaming state boundaries remains undefined:
+     ```c#
+     Vector<int> a = ... // NSVL
+     StreamingOn();
+     ... = a;        // Undefined behavior
+     StreamingOff();  
+     ```
+
+- **Complexity in Function Calls**:
+   - Calling functions while in streaming mode adds complexity for developers. They may not know which library routines are safe to call in streaming mode. For example:
+     - Is it safe to call `System.Console.WriteLine()` while in streaming mode?
+   - This lack of clarity increases the cognitive load on developers and risks incorrect usage.
+
+#### 3. RAII Style `using`
+
+Another option to expose the streaming state change would be to give it "Resource Acquisition is Initialization" (RAII) semantics. This can be achieved by introducing a placeholder class in `System.Runtime.Intrinsics.Arm.Sve` called `StreamingMode`. The lifetime of this class will determine when the streaming mode is entered and exited.
 
 ```c#
 using (StreamingMode m = new StreamingMode())
@@ -284,77 +360,103 @@ using (StreamingMode m = new StreamingMode())
 }
 ```
 
-Pros:
-- This approach is simpler to use and provides natural intent of executing streaming instructions in scoped block.
+**Pros:**
+- **Simpler and Intuitive Usage**:
+  - This approach is simpler to use and provides a clear, natural way to express streaming logic within a scoped block.
 
-Cons:
-- With this approach, calling .NET libraries method of different streaming mode becomes difficult.
+**Cons:**
+- **Difficulty in Calling Library Methods of Different Modes**:
+  - With this approach, calling .NET library methods that operate in a different streaming mode becomes challenging:
 
-  ```c#
-  void Foo() // non-streaming
-  {
-      using (StreamingMode m = new StreamingMode())
-      {
-        // streaming logic
-        Bar();  // non-streaming method
-        // streaming logic
-      }
-  }
-  ```
+    ```c#
+    void Foo() // non-streaming
+    {
+        using (StreamingMode m = new StreamingMode())
+        {
+          // streaming logic
+          Bar();  // non-streaming method
+          // streaming logic
+        }
+    }
+    ```
 
-- Just as mentioned in streaming state change intrinsics approach, accessing VL-dependent objects created from outside the streaming scope will be undefined.
+- **Undefined Behavior for VL-Dependent Objects Across Scopes**:
+  - Accessing VL-dependent objects created outside the streaming scope will lead to undefined behavior:
 
-  ```c#
-  Vector<int> a = ...  // NSVL
-  using (StreamingMode m = new StreamingMode())
-  {
-    // streaming logic
-    .. = a; // undefined
-  }
-  ```
+    ```c#
+    Vector<int> a = ...  // NSVL
+    using (StreamingMode m = new StreamingMode())
+    {
+      // streaming logic
+      .. = a; // undefined
+    }
+    ```
 
-- The .NET developer can forget to add the RAII around streaming code or forget to remove RAII around code that previously had streaming but not currently. In both cases, it can lead to crashes in the program when executing incompatible instructions. Since such code is syntantically and semantically correct, the C# compiler will not flag such errors.
+- **Risk of Developer Oversights**:
+  - Developers may forget to add or remove the RAII block around the streaming code, leading to crashes when incompatible instructions are executed. Since such issues are syntactically and semantically valid, the C# compiler will not flag them as errors.
 
-- This approach can be extended by the code generator to make it similar to approach #1. The code generator will see if the non-streaming code is getting invoked from streaming scope and can generate appropriate streaming state change instructions. However, it might be hard to do it other way round, if the users forget to enclose the streaming logic with `StreamingMode()`.
+- **Challenges in Extending for Automatic State Changes**:
+  - This approach could be extended by the code generator to behave like approach #1 (method attributes). For example:
+    - The code generator can detect if non-streaming code is invoked within a streaming scope and insert the required streaming state change instructions.
+    - However, it might be harder to handle the reverse case where developers forget to enclose streaming logic within a `StreamingMode` block.
 
-#### 4. Hybrid approach
+#### 4. Hybrid Approach
 
-A hybrid approach may be possible. The SME APIs would be marked with `[SME_Streaming]` and `[SME_Streaming_Compatible]`, but generally this would not be added to user methods and it would not cause the compiler to insert mode changes. .NET developers would either use the StreamingON() and StreamingOFF() or StreamingMode RAII method in their code. At JIT compile time, if methods marked with attributes are used in a function, then the compiler can check if the current mode is in the correct mode.
+The hybrid approach combines the use of method attributes (`[SME_Streaming]` and `[SME_Streaming_Compatible]`) with explicit streaming state controls such as `StreamingON()`/`StreamingOFF()` or the RAII-style `StreamingMode`. In this model:
+- SME APIs are annotated with attributes to indicate their streaming compatibility.
+- User-defined methods generally do not require attributes, and the compiler does not insert automatic mode changes for these methods.
+- Developers explicitly manage streaming states using `StreamingON()`/`StreamingOFF()` or the RAII-style `StreamingMode`.
+- At JIT compile time, if methods with attributes are invoked, the compiler can verify whether the current mode matches the method's requirements.
 
-Pros:
-- The compiler can error safely instead of getting an illegal instruction at runtime
+**Pros:**
+- **Safe Error Detection**:
+   - The compiler can validate the SME state at JIT compile time and catch potential mismatches. This prevents invalid instructions from being executed at runtime, reducing the risk of crashes.
 
-Cons:
-- The approach is confusing as to when the attributes can be used.
-- It may be difficult to ensure all error cases are captured correctly.
+- **Flexibility**:
+   - Developers have the flexibility to use explicit control (`StreamingON()`/`StreamingOFF()` or `StreamingMode`) while still benefiting from the safety provided by attributes for SME APIs.
 
 
-#### 5. Implicit (Code generator tracks SM state)
+**Cons:**
+- **Confusion About Attribute Usage**:
+   - It can be unclear to developers when and where attributes should be applied, especially since user-defined methods generally do not require them. This ambiguity could lead to misuse or inconsistent application.
 
-Instead of relying on the developer to specify places where streaming mode should be changed, code generator can take the heavy burden of tracking it implicitely. It can then also be made responsible for injecting appropriate streaming state change instructions at right place. Every time we see a call to SME intrinsics, `SMSTART` can be inserted and after that, `SMSTOP`. Several of these state changing instructions can be combined and performed in batch.
+- **Error Case Complexity**:
+   - Ensuring all possible error cases are correctly handled may be challenging. For instance, mismatches between explicit streaming state controls and attribute expectations could still occur in some scenarios.
 
-Pros:
-- No method attributes or RAII or any specicial intrinsics is needed for this to work. The logic is abstracted away from .NET developer and there is no change in the workflow of developer writing their streaming/non-streaming code.
 
-Cons:
-- The problem of what happens when VL-dependent objects are created in non-streaming and accessed in streaming remains unsolved. Code generator can add `throw InvalidProgramException` at such points, if it can prove that the object is VL-dependent and was created in non-streaming mode (or vice-versa), but it can be easily missed out.
-- Mistakes in injecting streaming state change instructions at right places can not only cause correctness issues, but also crashes.
-- With various optimizations, we might end up injecting streaming start in a branch, but do not add corresponding stop. This can lead to undefined behavior or crash the program.
-- Calling non-SME code in between SME intrinsic calls will result in the state switching even though is not required resulting in performance loss:
+#### 5. Implicit (Code Generator Tracks SM State)
 
-  ```c#
-  // Streaming mode started
-  SME.method1();
-  // Streaming mode stopped
-  x = x + 1; // This could have been run in streaming mode
-  // Streaming mode started
-  SME.method2();
-  // Streaming mode stopped
-  ```
+Instead of relying on the developer to specify where the streaming mode should be changed, the code generator can take on the responsibility of tracking the streaming mode implicitly. It would be responsible for injecting appropriate streaming state change instructions at the correct locations. For instance, every time an SME intrinsic is called, the code generator can insert `SMSTART` before and `SMSTOP` after the call. It can also optimize by batching multiple state changes.
 
-### Missing APIs in streaming mode
+**Pros:**
+- **No Developer Effort Required**:
+  - No method attributes, RAII blocks, or special intrinsics are needed. The logic is abstracted entirely away from the developer, allowing them to write streaming and non-streaming code without any changes to their workflow.
 
-There are a number of APIs that are not avilable when in streaming mode. This is mostly because these instruction would mostly likely have bad performance characteristics if implemented on the SME unit.
+**Cons:**
+- **Undefined Behavior for VL-Dependent Objects**:
+  - The problem of VL-dependent objects persists. For instance, if a VL-dependent object is created in non-streaming mode and accessed in streaming mode (or vice versa), the behavior is undefined. While the code generator could insert a `throw InvalidProgramException` at such points, identifying these cases reliably may be challenging.
+
+- **Risk of Incorrect State Injection**:
+  - Mistakes in injecting streaming state change instructions can lead to correctness issues or crashes, such as executing incompatible instructions in the wrong mode.
+
+- **Optimization Challenges**:
+  - Optimizations might lead to situations where a streaming start (`SMSTART`) is inserted in a branch, but the corresponding stop (`SMSTOP`) is omitted. This can result in undefined behavior or program crashes.
+
+- **Unnecessary State Switching**:
+  - Calling non-SME code between SME intrinsic calls could result in unnecessary state switching, leading to performance losses. For example:
+    ```c#
+    // Streaming mode started
+    SME.method1();
+    // Streaming mode stopped
+    x = x + 1; // This could have been executed in streaming mode
+    // Streaming mode started
+    SME.method2();
+    // Streaming mode stopped
+    ```
+
+### Missing APIs in Streaming Mode
+
+There are a number of APIs that are not available when in streaming mode. This is mostly because these instructions would likely exhibit poor performance characteristics if implemented on the SME unit.
 
 The list includes instructions in both AdvSimd and SVE:
   - SVE gather loads / scatter stores
@@ -365,235 +467,307 @@ The list includes instructions in both AdvSimd and SVE:
 
 There are a number of ways this could be handled:
 
-#### 1. Subclassing
+#### 1. MethodAttribute
 
-Put all non-streaming APIs into a separate class.
-For example `SVENonStreaming.GatherLoad()` or `SVE.NonStreaming.GatherLoad()`
+When using the MethodAttribute implementation, all SVE and AdvSimd APIs that are valid in streaming mode would be marked as streaming-compatible.
 
-Pros:
-- It's clear which methods are valid
-
-Cons:
-- There would have to be an API break. Existing AdvSimd routines would have to be moved into `AdvSimd.NonStreaming`
-- Additional complication for AdvSimd/SVE users who don't use or know about SME. I will not be clear why is a given routine in a slightly different class.
-- If `FEAT_SME_FA64` were ever implemented then all AdvSimd/SVE APIs would be valid on that platform. The simple solution here would to still treat those APIs as invalid.
-- A future Arm architecture extension could introduce more restrictions, or have a different set of restrictions.
-
-#### 2. MethodAttribute
-
-When using the MethodAttribute implementation, all SVE and AdvSimd APIs that are valid in streaming mode would be marked as streaming compatible.
-
-Pros:
+**Pros:**
 - It will be clear when looking at the API definition which methods are valid for SME.
-- Any future changes in restrictions can be marked with different attributes
-- This will cause API break, bit Since SVE APIs are `[Experimental]`, it should be find to do it.
+- Any future changes in restrictions can be marked with different attributes.
+- This will cause an API break, but since SVE APIs are `[Experimental]`, it should be fine to do it.
+
+#### 2. Subclassing
+
+Put all non-streaming APIs into a separate class.  
+For example, `SVENonStreaming.GatherLoad()` or `SVE.NonStreaming.GatherLoad()`.
+
+**Pros:**
+- It's clear which methods are valid.
+
+**Cons:**
+- There would have to be an API break. Existing AdvSimd routines would have to be moved into `AdvSimd.NonStreaming`.
+- Additional complication for AdvSimd/SVE users who don't use or know about SME. It will not be clear why a given routine is in a slightly different class.
+- If `FEAT_SME_FA64` were ever implemented, all AdvSimd/SVE APIs would become valid on that platform. The simple solution here would be to still treat those APIs as invalid.
+- A future Arm architecture extension could introduce more restrictions or a different set of restrictions.
 
 
-#### 3. Implicit (code generator tracks SM state)
+#### 3. Implicit (Code Generator Tracks SM State)
 
-All AdvSimd/SVE APIs are valid becuase the JIT compiler automatically inserts the correct mode changes.
+All AdvSimd/SVE APIs are valid because the JIT compiler automatically inserts the correct mode changes.
 
-Pros:
-- Everything is always valid
+**Pros:**
+- Everything is always valid.
 
-Cons:
-- Bad performance due to mode switches will be hard to debug
+**Cons:**
+- Poor performance due to frequent mode switches will be hard to debug.
 
-### Code generation for Agnostic VL
 
-`Vector<T>` is the .NET's representation of vectors, whose length is known only at runtime. It's length represents non-streaming VL (NSVL) that was added as part of SVE feature in .NET 9. It's length will be represented as streaming VL (SVL) when program is running in SME. To support SME feature, .NET's code generator has to be updated to understand the semantics of dynamic (NSVL) and unknown (SVL) vector length. Further, the code generated should also take the streaming mode into account.
+### Code Generation for Agnostic VL
 
-To understand why it is important, let us take a simple example of `bool a = Vector.GreaterThanAll(b, c);`. Here, `b` and `c` are of type `Vector<float>`. The code checks if values in all lanes of `b` are greater than corresponding values of `c`. We will use `fcmgt` instruction that does the comparison and stores `1` in corresponding lanes of predicate register for which the condition matches. After that, we just need to check if all lanes of predicate registers are active to return true or false.
+`Vector<T>` is .NET's representation of vectors whose length is known only at runtime. Its length represents non-streaming VL (NSVL), introduced as part of the SVE feature in .NET 9. When running in SME, its length corresponds to streaming VL (SVL). To support SME, .NET's code generator must handle the semantics of dynamic (NSVL) and unknown (SVL) vector length and generate code accordingly, considering streaming mode.
 
-In NSVL, where VL is fixed, we can compare the active lanes of predicate register with a "constant". In below assembly code, it is `#8`, assuming we are producing code for target, where VL=32.
+#### Why VL-Agnostic Code is Important
+
+Consider the example `bool a = Vector.GreaterThanAll(b, c);`, where `b` and `c` are of type `Vector<float>`. The operation checks if all lanes in `b` are greater than their counterparts in `c`. Using the `fcmgt` instruction, it compares values and stores `1` in the predicate register lanes for matching conditions. Subsequently, it checks if all predicate lanes are active to return `true` or `false`.
+
+In NSVL, where VL is fixed, we can compare the active predicate lanes to a constant (e.g., `#8` for a target with VL=32):
 
 ```asm
     fcmgt   p0.s, p0/z, z8.s, z0.s  # Activate p0 lanes for which z8 > z0
     ptrue   p1.s                  
     cntp    x0, p1, p0.s            # Count number of active lanes   
-    cmp     x0, #8                  # If all 8 lanes are active means all
-    cset    x0, eq                  # lanes satisfied z8 > z0
+    cmp     x0, #8                  # If all 8 lanes are active, all satisfy z8 > z0
+    cset    x0, eq                  # Set result based on comparison
 ```
 
-However, if VL is not known during compilation or if we are executing in streaming mode, where VL can change, we cannot embed the VL value `#8` in the generated code. It has to use more sophisticated method of finding that value and then comparing the active lane count against that like `rdvl` instruction.
+However, if VL is unknown during compilation or in streaming mode, where VL may change, we cannot embed constants like `#8`. Instead, a more dynamic approach is required using instructions like `rdvl`:
 
 ```asm
     fcmgt   p0.s, p0/z, z8.s, z0.s  # Activate p0 lanes for which z8 > z0
     ptrue   p1.s                  
     cntp    x0, p1, p0.s            # Count number of active lanes   
-    rdvl    x1, #4                  # Get count of 4-byte lanes
-    cmp     x0, x1                  # If all 8 lanes are active means all
-    cset    x0, eq                  # lanes satisfied z8 > z0
+    rdvl    x1, #4                  # Get dynamic count of 4-byte lanes
+    cmp     x0, x1                  # Compare active lanes with dynamic VL
+    cset    x0, eq                  # Set result based on comparison
 ```
 
-For a simple example above, we can see the code generated should be different based on if VL is known during compilation or not. Depending on the circumstances under which we are compiling a method, we might or might not know VL. As such, we need to design a strategy of generating correct and optimal VL agnostic code.
+This example demonstrates that code generation must adapt based on whether VL is known at compile time or not. A strategy is required for generating correct and optimal VL-agnostic code under various scenarios.
 
-#### Partial VL agnostic code
 
-In scenarios, where VL can be known during compilation (JIT) and it stays the same throughout the execution of the method getting compiled (non-streaming), we can take advantage of the VL size information in various optimization heuristics and code generation. As seen in the example above, if we know that VL= 32 bytes, we can embed the "4-byte lane count" constants in the target code, because the VL information will not change at that point in the program. I refer to this mode as "partial" VL agnostic code, because although, we will use scalable VL agnostic registers and instructions, we also make use of the VL information that we have during compilation.
+#### Partial VL-Agnostic Code
 
-Here are some of the things that will be done, in "partial" VL agnostic mode:
+In scenarios where VL is known during compilation (e.g., JIT) and remains constant during method execution (non-streaming), we can use "partial" VL-agnostic code. This mode leverages VL size information for optimization while using scalable VL-agnostic registers and instructions.
 
-- Dependency on VL size can be taken and the size can be embedded in the generated code. (see above example).
-- Value numbering can pick the appropriate `simd*_t` to represent constant data `Vector<T>` holds and can assign VN to them.
-- Code to load constant data from RO section into `Vector<T>` is allowed because we would know exactly how many bytes can be loaded using SVE `ldr` instruction and how many residual bytes should be loaded by NEON/scalar instructions.
-- VL variables can be present in "local" area of stack frame and no special placement is needed for them. They will be accessed using SVE's [load](https://docsmirror.github.io/A64/2023-06/ldr_z_bi.html)/[store](https://docsmirror.github.io/A64/2023-06/str_z_bi.html) VL-agnostic instructions.
-- Stack size can be calculated upfront and frame size can be embedded in the code even if `Vector<T>` variables are saved on stack.
-- Other optimizations that takes Vector length in consideration like loop unrolling, struct block copy, etc. can be lighten up.
+**Characteristics of Partial VL-Agnostic Code:**
+- VL size can be embedded in generated code (e.g., `#8` in the example above).
+- Value numbering can assign `simd*_t` types to `Vector<T>` constants and optimize accordingly.
+- Constants can be loaded using SVE `ldr` instructions with appropriate fallback for residual bytes.
+- VL variables can be stored in the "local" stack frame area and accessed with VL-agnostic load/store instructions.
+- Stack size and frame size can be determined upfront, even with `Vector<T>` variables on the stack.
+- Optimizations such as loop unrolling and struct block copying can utilize VL information.
 
-In code generator, we use `TYP_SIMD*` types to represent the types of vector values involved. For Arm64 target, valid values are `TYP_SIMD8` and `TYP_SIMD16`, that represents 8/16 bytes vector respectively. For x86 target, there are `TYP_SIMD16`, `TYP_SIMD32` and `TYP_SIMD64` to represent 16/32/64 bytes vectors respectively. For SVE, valid vector types are: `TYP_SIMD16`, `TYP_SIMD32`, `TYP_SIMD64`, `TYP_SIMD128` and `TYP_SIMD256`. For partial VL agnostic mode, we will repurpose the existing `TYP_SIMD32` and `TYP_SIMD64` of x86 and define 2 new types i.e. `TYP_SIMD128` and `TYP_SIMD256`. With that, we can reuse lot of the code and specially optimizations that are already present for Arm64 and x86. There is less code churn with that route. In partial agnostic VL mode, the size of `Vector<T>` will determine the type of `TYP_SIMD*` to be assigned to the `GenTree*` nodes.
+For Arm64, vector types are represented by `TYP_SIMD*`. For SVE, valid types are `TYP_SIMD16`, `TYP_SIMD32`, `TYP_SIMD64`, `TYP_SIMD128`, and `TYP_SIMD256`. In partial VL-agnostic mode, existing types like `TYP_SIMD32` and `TYP_SIMD64` will be reused, and new types (`TYP_SIMD128`, `TYP_SIMD256`) will be introduced for SVE. This approach minimizes code changes while leveraging existing optimizations.
 
-#### Full VL agnostic code
 
-In scenarios, where VL cannot be known during compilation (ahead of time compilation) or once known, can be different during the execution of the method (streaming). We cannot make any assumptions on the VL i.e. `Vector<T>` size information and cannot use it in optimization heuristics or targetted code. We will use a type `TYP_SIMDVL` for such variables and have `-1` size to it to indicate that size is unknown during compilation. The generated code should be fully agnostic to VL. It should not have any traces of dependency or assumptions about the VL. Hence, I refer this "fully" VL agnostic code.
+#### Full VL-Agnostic Code
 
-In "full" VL agnostic mode, following things will be prohibited for now. It may be possible to enable some or all of the optimizations, but we will leave it as lower priority and get to it, when other tasks for agnostic VL is done and we are confident that it works.
-- Dependency on VL size and embedding in code is not possible because it is not known during compilation time. Wherever there is a need to get VL size, instruction like `rdvl` will be used to poll the vector length (See example above).
-- If VL is not known during compilation, we won't be able to represent and store those constants in `simd*_t` of  valnue numbering. As such, value numbering will not be able to compare two `Vector<T>` values. Hence, we will assign `NoVN` for them and they won't be able to participate in further optimizations based on value numbering. For cases where constant data needs to be populated in vectors, the existing mechanism of NEON `Vector128` will be used.
-- We cannot have VL variables in the "locals" sections in full VL agnostic mode. If we have it such, the offsets of other non-VL locals will be unknown and we will not be able to access those variables from frame using fixed offset. Hence, such VL variables need to be present at the bottom of stack frame, batched together. They will be then referenced by using [load](https://docsmirror.github.io/A64/2023-06/ldr_z_bi.html)/[store](https://docsmirror.github.io/A64/2023-06/str_z_bi.html) VL-agnostic instructions.
-- If VL variables are present on the stack, the stack size cannot be calculated during compilation. In that case, instruction like [addvl](https://docsmirror.github.io/A64/2023-06/addvl_r_ri.html) will be used to create the stack frame.
-- Other optimizations that takes Vector length in consideration like loop unrolling, struct block copy, etc. will be disabled.
+In cases where VL is unknown during compilation (e.g., AOT compilation) or may vary during execution (e.g., streaming mode), we use "full" VL-agnostic code. This mode avoids any dependency on VL size.
 
-#### Partial -> Full VL agnostic code
+**Characteristics of Full VL-Agnostic Code:**
+- VL size cannot be embedded in code. Instructions like `rdvl` are used to determine VL dynamically.
+- Value numbering cannot represent `Vector<T>` constants due to unknown size, so `NoVN` will be assigned, limiting optimizations.
+- VL variables cannot reside in the "locals" area of the stack frame. Instead, they are placed at the stack frame's bottom and accessed with VL-agnostic load/store instructions.
+- Stack size cannot be calculated upfront. Instructions like `addvl` must be used for dynamic stack frame creation.
+- Optimizations like loop unrolling and struct block copying are disabled.
 
-For crossgen2 scenarios, where we do ahead of time compilation without knowning the VL, but then re-compile methods, when VL can be found out, we can use "partial->full" agnostic VL code generation technique. What that means is, during AOT compilation, we will generate "full" agnostic VL code. During execution, when we rejit those methods, we will use the partial VL agnostic code, whenever applicable.
+A new type, `TYP_SIMDVL`, will represent fully VL-agnostic variables, with a size of `-1` to indicate unknown size.
+
+
+#### Partial -> Full VL-Agnostic Code
+
+For crossgen2 scenarios (AOT compilation followed by re-JIT), we can use a "partial->full" VL-agnostic strategy. During AOT compilation, "full" VL-agnostic code is generated. At runtime, methods are recompiled into "partial" VL-agnostic code if VL becomes known.
+
 
 #### Summary
 
-To summarize, the VL agnostic code generation is about two properties:
-1. Can we find out VL up-front during method compilation?
-2. If yes, will the VL stay the same during execution of the portion of code that is getting compiled?
+VL-agnostic code generation depends on two factors:
+1. Whether VL can be determined during method compilation.
+2. Whether VL remains constant during method execution.
 
-Here is snapshot of VL agnostic code mode that will be used for various scenarios.
+The following table summarizes the code generation modes for various scenarios:
 
-| Scalable Mode | Method type   | Code generation mode  | VL agnostic code  |
+| Scalable Mode | Method Type   | Code Generation Mode  | VL-Agnostic Code  |
 |---------------|---------------|-----------------------|-------------------|
-| SVE           | non-streaming | JIT                   | partial           |
-| SVE           | non-streaming | NativeAOT             | full              |
-| SVE           | non-streaming | crossgen2             | full -> partial   |
-| SME           | non-streaming | JIT                   | partial           |
-| SME           | non-streaming | NativeAOT             | full              |
-| SME           | non-streaming | crossgen2             | full -> partial   |
-| SME           | streaming     | any                   | full              |
+| SVE           | Non-Streaming | JIT                   | Partial           |
+| SVE           | Non-Streaming | NativeAOT             | Full              |
+| SVE           | Non-Streaming | Crossgen2             | Full -> Partial   |
+| SME           | Non-Streaming | JIT                   | Partial           |
+| SME           | Non-Streaming | NativeAOT             | Full              |
+| SME           | Non-Streaming | Crossgen2             | Full -> Partial   |
+| SME           | Streaming     | Any                   | Full              |
 
-#### Vector<T> intrinsics
 
-Traditionally, the `Vector<T>` methods on Arm64 are mapped to corresponding methods of `Vector128` in IR and that way, NEON instructions are produced with 16-byte SIMD registers. With SVE and SME, we will continue to retain the `Vector<T>` methods in IR nodes and this will hint us to produce SVE/SME code using scalable registers. We will only enable the mapping of `Vector<T>` to scalable concept if underlying `VL > 16`, because when `VL==16`, NEON instructions are similar or faster compared to SVE instruction set.
+#### `Vector<T>` Intrinsics
 
-### Restricting VL-dependent objects transfer between streaming states
+For Arm64, `Vector<T>` methods are traditionally mapped to `Vector128` in IR, producing NEON instructions. With SVE and SME, `Vector<T>` methods in IR will indicate scalable registers. This mapping is only enabled when `VL > 16`, as NEON instructions are faster or equivalent at `VL == 16`.
 
-If we chose option# 1 of using method attributes like `[SME_Streaming]`, code generator should be able to validate if arguments or return results of such method is VL-dependent objects and if yes, it will add a code to `throw InvalidProgramException` at the start of the method. There can be several scenarios in which VL-dependent objects may cross boundary between streaming states. Simplest one is `static Vector<T>` variable `a` can be accessed in streaming method. If we prefer some other options, then we need to rethink on how to enforce such restriction.
+
+### Restricting VL-dependent Objects Transfer Between Streaming States
+
+If we choose option #1 of using method attributes like `[SME_Streaming]`, the code generator should validate whether the arguments or return values of such methods are VL-dependent objects. If they are, the code generator will insert logic to `throw InvalidProgramException` at the start of the method. 
+
+Several scenarios can arise where VL-dependent objects might cross boundaries between streaming states. The simplest example is a `static Vector<T>` variable `a` being accessed in a streaming method. 
+
+If other options are preferred instead of method attributes, we would need to rethink how to enforce this restriction effectively.
 
 ### Runtime
 
-Here are some raw notes of various .NET runtime components that need to be handled for SME and need more thinking.
+### Notes on .NET Runtime Components for SME
+
+Here are some raw notes on various .NET runtime components that need to be handled for SME and require further investigation.
 
 #### Exception Handling
-- Saving and restoring of `PSTATE.SM` and `PSTATE.ZA` along with saving and restoring of `ZA` storage space.
-- Update unwinder to sync with that of Windows OS to bring in newer unwind codes relevant for SME instructions and `ZA`.
+- Saving and restoring of `PSTATE.SM` and `PSTATE.ZA`, along with saving/restoring the `ZA` storage space, need to be addressed.
+- Update the unwinder to sync with Windows OS to incorporate newer unwind codes relevant for SME instructions and `ZA`.
+
 
 #### Threads
-- During process creation, `PSTATE.SM` state is cleared i.e. it starts with non-streaming mode. We can use the same concept when new threads are created.
-
-#### GC
-- `Vector<T>` that is on stack can be different depending on the streaming mode that was active when it was saved. When GC scans the object, it needs to know the size of object to scan. Objects already have `size` component in the header, but additional metadata might be needed for VL-dependent objects created in streaming mode to make sure the correct size is read by GC. Correct size information might also be needed in various other components of runtime.
-- Need to deeper investigation on if `ZA` storage can hold GC references and if yes, how to make GC scan the storage space.
-- When suspended execution threads by GC are resumed, some threads might be in streaming mode while others might not. Need to check if there is any handling that needs to happen to make sure that their modes are restored correctly and they do not accidently execute code in wrong mode.
-
-#### Assembly routines and Stubs
-For simplicity, we will not use streaming in hand-written assemblies, but if there is a need, it should ensure to save / restore all the required streaming and ZA states.
-
-#### .NET <--> PInvokes / System calls
-
-Anytime we make calls including but not limited to Pinvokes, JIT helpers, stubs we will have to ensure to save scalable `Z` and predicate `P` registers.
+- During process creation, the `PSTATE.SM` state is cleared (defaulting to non-streaming mode). The same concept can be applied when new threads are created.
 
 
-### Debugger / Profiler
+#### Garbage Collection (GC)
+- `Vector<T>` instances on the stack may differ depending on the streaming mode active when they were saved. When GC scans an object, it must know the object's size. While objects already have a `size` component in the header, additional metadata might be required for VL-dependent objects created in streaming mode to ensure the correct size is read by the GC. This size information may also be needed in other runtime components.
+- Investigate if `ZA` storage can hold GC references. If so, determine how the GC can scan this storage space.
+- When suspended execution threads are resumed by the GC, some threads might be in streaming mode while others might not. Investigate whether any handling is required to ensure that their modes are restored correctly, avoiding accidental execution in the wrong mode.
 
-- When stepping through a program, processor mode might be different from the one implied by the source code that is being debugged. This can be possible when a different As such, we can encounter crash if the code being debugged executes invalid instruction depending on the streaming mode.
+#### Assembly Routines and Stubs
+- Hand-written assembly routines will avoid using streaming mode for simplicity. However, if streaming is necessary, ensure that all required streaming and `ZA` states are saved and restored properly.
 
-- Another interesting debugging scenario is how does offline debugging or debugging of dumps work. While debugging the dumps, when `SMSTART` instruction is encountered, it cannot execute the code after it on SME unit. As a result the debugger need to save some kind of SSVL information and `PSTATE` information at such points. Debugger during stepping through will read this information and adjust the VL and ZA states accordingly. It might have to also save/restore contents of Z and ZA registers, but it is unclear how it will all connect.
+#### .NET <--> PInvokes / System Calls
+- For all calls (e.g., PInvokes, JIT helpers, stubs), ensure that scalable `Z` and predicate `P` registers are saved.
 
-- Appropriate support of displaying the values of `Vector<T>` in debugger should be taken depending on the streaming mode in which they were created. Since VL-dependent objects should not cross streaming mode boundary, such variables should not change their sizes in debugger when streaming type is switched.
+#### Debugger / Profiler
 
-- Similarly, since scalable registers operate on different vector length when streaming mode is changed, debugger need to ensure that streaming mode changes are reflected in register contents it displayed. This might be easy for non-UI debuggers, where you need to type the command to display registers. For UI based debuggers, which has register window, the UI need to be refreshed with appropriate VL and its contents displayed.
+- **Stepping Through Code**:
+  - The processor mode may differ from that implied by the source code being debugged. This can lead to crashes if the code executes invalid instructions based on the streaming mode.
 
-- Visual Studio, windbg and other debugger tools need to add support for displaying the contents of `ZA` storage space.
+- **Offline Debugging / Dump Debugging**:
+  - Debugging dumps poses challenges since encountering an `SMSTART` instruction prevents execution of subsequent code on an SME unit. The debugger needs to save `SSVL` and `PSTATE` information at such points. During stepping, the debugger must read this information and adjust `VL` and `ZA` states accordingly. It may also need to save/restore `Z` and `ZA` register contents, though the exact mechanism is unclear.
 
-- During debugging, it is possible to write the `PC` with instruction like `SMSTART` and `SMSTOP`. When this happen, the impact on the thread being debugged might have severe undefined impact. This is same scenario as inserting `int 3` in the `PC` while stepping through the code during debugging.
+- **Variable Display in Debugger**:
+  - Proper support for displaying the values of `Vector<T>` in the debugger is required, depending on the streaming mode in which they were created. VL-dependent objects should not cross streaming mode boundaries, and their sizes should remain consistent in the debugger when the streaming type changes.
+  - For scalable registers, the debugger must reflect streaming mode changes in the displayed register contents. Non-UI debuggers may handle this more easily through commands, but UI-based debuggers with register windows need to refresh the UI with the appropriate `VL` and register contents.
+
+- **ZA Storage Display**:
+  - Add support in tools like Visual Studio and WinDbg to display the contents of `ZA` storage space.
+
+- **Impact of Modifying `PC` During Debugging**:
+  - Writing to the `PC` with instructions like `SMSTART` or `SMSTOP` during debugging could have severe undefined impacts on the thread being debugged. This is analogous to inserting `int 3` into the `PC` while stepping through code.
+
 
 ## ZA storage space
 
-### Concept
+### Concept and Background
 
-Assuming we have 128-bits / 16B SVL, here is the representation. Treat `n is from 0 thru 15`
-- **BYTE**
-  - <u>ZA array vector access</u>: The `byte` in ZA, are stored as [16x16] 8-bits elements, thus representing 256 `byte` elements in total. Each row is refered is `ZA.B[n]`, where `n` is a row index. For e.g. when `SVE=16B`, they are `ZA.B[0], ZA.B[1],...,ZA.B[15]`.
-  - <u>ZA tile</u>: There is just 1 tile for `byte` and is representated as `ZA0.B`. The horizontal slices (row order) is accessed using `ZA0H.B[n]`. For e.g. in our case, it will be `ZA0H.B[0], ZA0H.B[1],...,ZA0H.B[15]`. Likewise, column major entries are accessed using vertical slices using notation `ZA0V.B[n]`.
-- **SHORT**
-  - <u>ZA array vector access</u>: The `short` in ZA, are stored as [16x16] 16-bits elements, thus representing 128 `short` elements in total. Each row is refered is `ZA.H[n]`, where `n` is a row index.For e.g. when `SVE=16B`, they are `ZA.H[0], ZA.H[1],...,ZA.H[15]`.
-  - <u>ZA tile</u>: There are 2 tiles for `short` and are representated as `ZA0.H` and `ZA1.H`. The horizontal slices (row order) are accessed using terminology `ZA0H.H[n]` and `ZA1H.H[n]`. The access is alternate such that `ZA0H.H[0] => ZA.H[0], ZA0H.H[1] => ZA.H[2]` and so forth. Likewise, `ZA1H.H[0] => ZA.H[1], ZA1H.H[1] => ZA.H[3]`. In general we can formulate it like: `ZAkH.H[m] => ZA.H[2*m+k]`.
+### ZA Representation for 128-bits / 16B SVL
 
-    The verticle slices `ZA0V.H[n]` accesses the top 8 rows of `ZA` storage in "column-major" order, while `ZA1V.H[n]` access the bottom 8 rows of `ZA` storage, again, in "column-major" order. They go from `ZA0V.H[0], ZA0V.H[1],..,ZA0V.H[7]` and likewise for `ZA1V.H[*]`.
+Assuming a 128-bit (16B) Scalable Vector Length (SVL), here is how ZA is represented. The index `n` ranges from `0` to `15`.
 
-![alt text](image.png)
+#### **BYTE**
 
-Image courtsey: Arm documentation for 32B/256-bits SVL. Source: https://developer.arm.com/documentation/109246/0100/SME-Overview/SME-ZA-storage/ZA-array-vector-access-and-ZA-tile-mapping
+- **ZA Array Vector Access**:  
+  The `byte` elements in ZA are stored as a [16x16] array of 8-bit elements, representing 256 `byte` elements in total. Each row is referred to as `ZA.B[n]`, where `n` is the row index.  
+  For example, when `SVE=16B`, the rows are:  
+  `ZA.B[0], ZA.B[1], ..., ZA.B[15]`.
 
-![alt text](image-1.png)
-Image credits: https://community.arm.com/arm-community-blogs/b/architectures-and-processors-blog/posts/arm-scalable-matrix-extension-introduction
+- **ZA Tile**:  
+  There is a single tile for `byte` elements, represented as `ZA0.B`.  
+  - **Horizontal slices** (row order) are accessed using `ZA0H.B[n]`.  
+    For example: `ZA0H.B[0], ZA0H.B[1], ..., ZA0H.B[15]`.
+  - **Vertical slices** (column-major order) are accessed using `ZA0V.B[n]`.  
 
-### Representation of ZA storage in .NET APIs
+#### **SHORT**
 
-ACLE do not expose `ZA` in the API signature. Instead they have one of the following notations on intrinsic APIs:
- - `__arm_in("za")` : The callee takes the `ZA` state as input and returns with the state unchanged.
- - `__arm_out("za")` : The callee ignores the incoming `ZA` state and returns new state.
- - `__arm_inout("za")` : The callee takes the state as `ZA` input and returns new state.
+- **ZA Array Vector Access**:  
+  The `short` elements in ZA are stored as a [16x16] array of 16-bit elements, representing 128 `short` elements in total. Each row is referred to as `ZA.H[n]`, where `n` is the row index.  
+  For example, when `SVE=16B`, the rows are:  
+  `ZA.H[0], ZA.H[1], ..., ZA.H[15]`.
 
-Below is the API for [SMLAL](https://docsmirror.github.io/A64/2023-06/smlal_za_zzi.html) instruction.
+- **ZA Tile**:  
+  There are two tiles for `short` elements, represented as `ZA0.H` and `ZA1.H`.  
+  - **Horizontal slices** (row order):  
+    - `ZA0H.H[n]` and `ZA1H.H[n]` access the rows alternately:  
+      - `ZA0H.H[0] => ZA.H[0]`, `ZA0H.H[1] => ZA.H[2]`, and so on.  
+      - `ZA1H.H[0] => ZA.H[1]`, `ZA1H.H[1] => ZA.H[3]`, and so on.  
+    - General formula: `ZAkH.H[m] => ZA.H[2*m+k]`.
 
-```
+  - **Vertical slices** (column-major order):  
+    - `ZA0V.H[n]` accesses the top 8 rows of `ZA` storage.  
+    - `ZA1V.H[n]` accesses the bottom 8 rows of `ZA` storage.  
+    - Both follow column-major order:  
+      - `ZA0V.H[0], ZA0V.H[1], ..., ZA0V.H[7]`.  
+      - Likewise for `ZA1V.H[*]`.
+
+  See refer images in `References` section.
+
+### Representation of ZA Storage in .NET APIs
+
+The Arm Compiler Language Extensions (ACLE) do not expose `ZA` storage directly in the API signatures. Instead, they use specific notations to describe how the intrinsic APIs interact with the `ZA` state:
+
+- `__arm_in("za")`: The callee takes the `ZA` state as input and returns with the state unchanged.
+- `__arm_out("za")`: The callee ignores the incoming `ZA` state and returns a new state.
+- `__arm_inout("za")`: The callee takes the `ZA` state as input and returns a new state.
+
+For example, the API for the [SMLAL](https://docsmirror.github.io/A64/2023-06/smlal_za_zzi.html) instruction is defined as follows:
+
+```c
 // SMLAL intrinsic for 2 quad-vector groups.
-    void svmla_lane_za32[_s8]_vg4x2(uint32_t slice, svint8x2_t zn,
-                                    svint8_t zm, uint64_t imm_idx)
-      __arm_streaming __arm_inout("za");
-
+void svmla_lane_za32[_s8]_vg4x2(uint32_t slice, svint8x2_t zn,
+                                svint8_t zm, uint64_t imm_idx)
+  __arm_streaming __arm_inout("za");
 ```
 
-We can follow the similar approach and not expose `ZA` storage in .NET APIs. We will map the APIs to the SME instructions during code generation and that will implicitely take care of reading/writing `ZA` state. So for above instruction, we will have API:
 
-```C#
+#### Proposed Approach for .NET APIs
+
+We can adopt a similar approach in .NET by not exposing `ZA` storage directly in the API signatures. Instead, the APIs will be mapped to SME instructions during code generation, implicitly handling the reading and writing of the `ZA` state.
+
+For example, the corresponding .NET API for the above instruction could look like this:
+
+```csharp
 void SvmlaLaneZA32S8_VG4x2(uint slice, Tuple<Vector<byte>, Vector<byte>> zn, Vector<byte> zm, ulong imm_idx);
 ```
 
-There are various nomenclature rules for API names that depends on if `ZA` is used by the instruction as input state, if it is operating on single lane, etc. The API will append those operations like having `_x2`/`_x4`or `_vg2`/ `_vg4` or `_vg1x2`/`_vg2x2`, etc. We need to follow similar rules for .NET APIs.
+Here:
+- The `Tuple<Vector<byte>, Vector<byte>> zn` represents the vector groups (`svint8x2_t` in ACLE).
+- `Vector<byte> zm` corresponds to the single vector operand.
+- The `ulong imm_idx` represents the immediate index.
 
-Refer: https://arm-software.github.io/acle/main/acle.html#sme-instruction-intrinsics
+
+#### Nomenclature Rules for API Names
+
+The naming of these APIs will follow specific rules depending on the usage of `ZA` and the type of operations. For example:
+- If an operation involves multiple lanes, the suffix might include `_x2`, `_x4`, etc.
+- For vector groups, the suffix might include `_vg2`, `_vg4`, `_vg1x2`, `_vg2x2`, etc.
+
+These naming conventions ensure clarity and consistency across the API surface. For more details, refer to the [Arm Compiler Language Extensions (ACLE) documentation](https://arm-software.github.io/acle/main/acle.html#sme-instruction-intrinsics).
 
 ## Dependencies
 
-- Windows OS
-  - Support of SME and context save/restore
-  - Unwind codes for SME instructions
-- .NET Debugger team
-  - Display of `Vector<T>` in streaming and non-streaming modes.
-- C++ compiler support
-  - If we ever decide to use streaming in C++ runtime code or assembly routines
-- Visual Studio  Debugger and windbg
+- **Windows OS**
+  - Support for SME and context save/restore.
+  - Unwind codes for SME instructions.
+
+- **.NET Debugger Team**
+  - Support for displaying `Vector<T>` in both streaming and non-streaming modes.
+
+- **C++ Compiler Support**
+  - Necessary if streaming is ever used in C++ runtime code or assembly routines.
+
+- **Visual Studio Debugger and WinDbg**
+  - Updates required to handle and display SME-specific states.
 
 ## Testability
 
-- The Intrinsic unit tests that will be added for SME intrinsics should automatically test the switching of streaming modes. We can use [Armie](https://developer.arm.com/Tools%20and%20Software/Arm%20Instruction%20Emulator) to test some of the scenarios around switching streaming mode. Others can be validated on osx-arm64 M4+.
-- Coverage will be added in Antigen/Fuzzlyn to create methods that operate on streaming mode and that calls SME intrinsics. We will need osx-arm64 M4+ to get the coverage here for SME intrinsics.
-- `superpmi-replay` can be harnessed to produce SME code and verify the encoding and code generation works as expected.
+- **Intrinsic Unit Tests**
+  - SME intrinsic tests will inherently validate streaming mode switching. 
+  - Armie ([Arm Instruction Emulator](https://developer.arm.com/Tools%20and%20Software/Arm%20Instruction%20Emulator)) can be used to test streaming mode switching scenarios.
+  - Tests can also be conducted on `osx-arm64` M4+ hardware.
 
+- **Antigen/Fuzzlyn Coverage**
+  - Create methods operating in streaming mode that call SME intrinsics.
+  - Coverage will require `osx-arm64 M4+` to validate SME intrinsics.
 
-## Hardware to prototype
+- **SuperPMI Replay**
+  - Harness `superpmi-replay` to produce SME code and verify the encoding and code generation.
 
-- Apple's M4
-  - The only hardware that has SME, but it does not have SVE, so will be hard to test scenario of switching streaming modes. However, preliminary SME intrinsics will be able to validate.
-- Azure Cobalt / AWS's Graviton
-  - We can use these hardwares to validate vector agnostic support, which will be the foundation of validating SME.
+## Hardware to Prototype
+
+- **Apple's M4**
+  - Currently the only hardware with SME support, but lacks SVE, making it difficult to test scenarios involving streaming mode switching. Preliminary SME intrinsic validation can still be performed.
+
+- **Azure Cobalt / AWS Graviton**
+  - Suitable for validating vector-agnostic support, which forms the foundation for SME validation.
 
 ## Alternative approach - Using Kleidi
 
@@ -625,6 +799,12 @@ This approach could be used as a stepping stone until an eventual SME API is imp
 - SME instructions: https://docsmirror.github.io/A64/2023-06/mortlachindex.html
 - SME kernel docs: https://docs.kernel.org/arch/arm64/sme.html
 - LLVM register allocation for `ZA`: https://github.com/llvm/llvm-project/commit/c08dabb0f476e7ff3df70d379f3507707acbac4e
+
+- ![ZA Array Vector Access and Tile Mapping](image.png)  
+_Image courtesy: Arm documentation for 32B/256-bits SVL. Source: [Arm SME Overview](https://developer.arm.com/documentation/109246/0100/SME-Overview/SME-ZA-storage/ZA-array-vector-access-and-ZA-tile-mapping)_
+
+- ![SME ZA Storage](image-1.png)  
+_Image credits: [Arm Community Blog](https://community.arm.com/arm-community-blogs/b/architectures-and-processors-blog/posts/arm-scalable-matrix-extension-introduction)_
 
 
 ### TODO
