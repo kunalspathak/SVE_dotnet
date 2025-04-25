@@ -161,9 +161,11 @@ The Scalable Matrix Extension (SME) is well-suited for various PC and laptop use
 
 - **Large-Scale Matrix Manipulation**: SME is beneficial for workloads requiring extensive matrix computations, such as those found in the [Tensor SDK](https://learn.microsoft.com/en-us/dotnet/api/system.numerics.tensors.tensor-1?view=net-9.0-pp).
 
+- **Special Accelerator**: We can also envision SME work to be shipped as a standalone tool or collection of libraries (something similar to [Unity](https://docs.unity3d.com/Packages/com.unity.burst@1.2/manual/index.html)), that will help widely used acclerators in AI/ML workflow.
+
 ### Limitations
 
-SME is currently not applicable to server scenarios, as it is not available on server-grade hardware.
+SME is currently not applicable to server scenarios, as it is not available on server-grade hardware. However, the intention of this design document is exploring the technical aspects of supporting SME. We want to make sure that what we design for SME (server or client), works well with the non-streaming SVE, which will be shipped much earlier than SME will get shipped.
 
 ## .NET Runtime design
 
@@ -184,11 +186,9 @@ Let us walk through each of the above points in depth.
 
 ### Streaming state change
 
-To support the Scalable Matrix Extension (SME) in the .NET Runtime, we need to develop a mechanism for managing streaming state transitions. This can be done either automatically by the compiler or manually by giving control to the .NET developer. Below, we explore various approaches, along with their pros and cons.
+To support the Scalable Matrix Extension (SME) in the .NET Runtime, we need to develop a mechanism for managing streaming state transitions. This can be done either automatically by the compiler or manually by giving control to the .NET developer.
 
-#### 1. MethodAttribute
-
-This approach mirrors the C++ ACLE design, introducing method attributes `[SME_Streaming]` and `[SME_Streaming_Compatible]` to indicate the expected streaming mode of a method. These attributes allow the code generator to insert appropriate streaming state change instructions. Having these method attributes, user can use them on methods that will have contain the code related to SME and streaming.
+One approach we can take is to mirror the C++ ACLE design, introducing method attributes `[SME_Streaming]` and `[SME_Streaming_Compatible]` to indicate the expected streaming mode of a method. These attributes allow the code generator to insert appropriate streaming state change instructions. Having these method attributes, user can use them on methods that will have contain the code related to SME and streaming.
 
 In the example below, streaming state change instructions are inserted into the `Bar()` method when it calls the non-streaming `Baz()` method. 
 
@@ -292,167 +292,7 @@ This model ensures that calling `[SME_Streaming_Compatible]` intrinsics from non
 - **Tail call optimizations**: Similar to inlining, tail call optimizations might have to get disabled when caller and callee are not in similar streaming mode.
 - **Platform Compatibility**: When compiling streaming methods for platforms that lack SME support, the code generator can insert a `throw PlatformNotSupportedException` at the beginning of the method to ensure compatibility.
 
-
-
-#### 2. Expose StreamingON() and StreamingOFF()
-
-An alternative to using method attributes is exposing streaming state change instructions as intrinsics, such as `StreamingON()` and `StreamingOFF()`. This approach allows developers to explicitly control streaming mode transitions, while the code generator simply inserts the corresponding instructions at the specified locations.
-
-**Pros:**
-- **Fine-Grained Control**:
-   - Developers have precise control over where and when to enable or disable streaming mode in their code.
-
-- **Unchanged Workflow**:
-   - Unlike method attributes, this approach does not require developers to annotate methods, keeping their workflow and coding style consistent.
-
-- **Simplified Code Generator**:
-   - The code generator does not need to analyze or infer placement of streaming state change instructions. It only needs to ensure proper saving and restoring of registers before and after the intrinsics are invoked.
-
-
-**Cons:**
-- **High Risk of Developer Errors**:
-   - This approach gives developers more control than necessary, increasing the likelihood of mistakes:
-     - For example, a developer might call `StreamingON()` and inadvertently write code that generates NEON instructions, which are invalid in streaming mode. This could cause the program to crash.
-
-- **Forgotten Intrinsics**:
-   - Developers may forget to call `StreamingON()` or `StreamingOFF()`, leading to catastrophic failures. Unlike the method attributes approach, there is no safety mechanism in place to insert missing state change instructions automatically.
-   - Calling an SME API that is valid only in streaming mode without enabling streaming mode would result in an illegal instruction exception at runtime.
-
-- **Scattered Intrinsics**:
-   - Developers will need to manually scatter `StreamingON()` and `StreamingOFF()` calls throughout their code, making it harder to maintain. They must also remember the current mode at every point in their code to ensure counterpart APIs are called correctly.
-
-- **Undefined Behavior in Conditional Logic**:
-   - Conditional execution can lead to undefined behavior, and there is no straightforward way to flag such issues:
-     ```c#
-     StreamingOn();
-     ...
-     if (condition)
-     {
-       StreamingOff();
-     }
-     ...
-     StreamingAPI(); // Is this valid?
-     StreamingOff();
-     ```
-
-- **VL-Dependent Object Issues**:
-   - Accessing VL-dependent objects (e.g., vectors) across streaming state boundaries remains undefined:
-     ```c#
-     Vector<int> a = ... // NSVL
-     StreamingOn();
-     ... = a;        // Undefined behavior
-     StreamingOff();  
-     ```
-
-- **Complexity in Function Calls**:
-   - Calling functions while in streaming mode adds complexity for developers. They may not know which library routines are safe to call in streaming mode. For example:
-     - Is it safe to call `System.Console.WriteLine()` while in streaming mode?
-   - This lack of clarity increases the cognitive load on developers and risks incorrect usage.
-
-#### 3. RAII Style `using`
-
-Another option to expose the streaming state change would be to give it "Resource Acquisition is Initialization" (RAII) semantics. This can be achieved by introducing a placeholder class in `System.Runtime.Intrinsics.Arm.Sve` called `StreamingMode`. The lifetime of this class will determine when the streaming mode is entered and exited.
-
-```c#
-using (StreamingMode m = new StreamingMode())
-{
-  // streaming logic
-}
-```
-
-**Pros:**
-- **Simpler and Intuitive Usage**:
-  - This approach is simpler to use and provides a clear, natural way to express streaming logic within a scoped block.
-
-**Cons:**
-- **Difficulty in Calling Library Methods of Different Modes**:
-  - With this approach, calling .NET library methods that operate in a different streaming mode becomes challenging:
-
-    ```c#
-    void Foo() // non-streaming
-    {
-        using (StreamingMode m = new StreamingMode())
-        {
-          // streaming logic
-          Bar();  // non-streaming method
-          // streaming logic
-        }
-    }
-    ```
-
-- **Undefined Behavior for VL-Dependent Objects Across Scopes**:
-  - Accessing VL-dependent objects created outside the streaming scope will lead to undefined behavior:
-
-    ```c#
-    Vector<int> a = ...  // NSVL
-    using (StreamingMode m = new StreamingMode())
-    {
-      // streaming logic
-      .. = a; // undefined
-    }
-    ```
-
-- **Risk of Developer Oversights**:
-  - Developers may forget to add or remove the RAII block around the streaming code, leading to crashes when incompatible instructions are executed. Since such issues are syntactically and semantically valid, the C# compiler will not flag them as errors.
-
-- **Challenges in Extending for Automatic State Changes**:
-  - This approach could be extended by the code generator to behave like approach #1 (method attributes). For example:
-    - The code generator can detect if non-streaming code is invoked within a streaming scope and insert the required streaming state change instructions.
-    - However, it might be harder to handle the reverse case where developers forget to enclose streaming logic within a `StreamingMode` block.
-
-#### 4. Hybrid Approach
-
-The hybrid approach combines the use of method attributes (`[SME_Streaming]` and `[SME_Streaming_Compatible]`) with explicit streaming state controls such as `StreamingON()`/`StreamingOFF()` or the RAII-style `StreamingMode`. In this model:
-- SME APIs are annotated with attributes to indicate their streaming compatibility.
-- User-defined methods generally do not require attributes, and the compiler does not insert automatic mode changes for these methods.
-- Developers explicitly manage streaming states using `StreamingON()`/`StreamingOFF()` or the RAII-style `StreamingMode`.
-- At JIT compile time, if methods with attributes are invoked, the compiler can verify whether the current mode matches the method's requirements.
-
-**Pros:**
-- **Safe Error Detection**:
-   - The compiler can validate the SME state at JIT compile time and catch potential mismatches. This prevents invalid instructions from being executed at runtime, reducing the risk of crashes.
-
-- **Flexibility**:
-   - Developers have the flexibility to use explicit control (`StreamingON()`/`StreamingOFF()` or `StreamingMode`) while still benefiting from the safety provided by attributes for SME APIs.
-
-
-**Cons:**
-- **Confusion About Attribute Usage**:
-   - It can be unclear to developers when and where attributes should be applied, especially since user-defined methods generally do not require them. This ambiguity could lead to misuse or inconsistent application.
-
-- **Error Case Complexity**:
-   - Ensuring all possible error cases are correctly handled may be challenging. For instance, mismatches between explicit streaming state controls and attribute expectations could still occur in some scenarios.
-
-
-#### 5. Implicit (Code Generator Tracks SM State)
-
-Instead of relying on the developer to specify where the streaming mode should be changed, the code generator can take on the responsibility of tracking the streaming mode implicitly. It would be responsible for injecting appropriate streaming state change instructions at the correct locations. For instance, every time an SME intrinsic is called, the code generator can insert `SMSTART` before and `SMSTOP` after the call. It can also optimize by batching multiple state changes.
-
-**Pros:**
-- **No Developer Effort Required**:
-  - No method attributes, RAII blocks, or special intrinsics are needed. The logic is abstracted entirely away from the developer, allowing them to write streaming and non-streaming code without any changes to their workflow.
-
-**Cons:**
-- **Undefined Behavior for VL-Dependent Objects**:
-  - The problem of VL-dependent objects persists. For instance, if a VL-dependent object is created in non-streaming mode and accessed in streaming mode (or vice versa), the behavior is undefined. While the code generator could insert a `throw InvalidProgramException` at such points, identifying these cases reliably may be challenging.
-
-- **Risk of Incorrect State Injection**:
-  - Mistakes in injecting streaming state change instructions can lead to correctness issues or crashes, such as executing incompatible instructions in the wrong mode.
-
-- **Optimization Challenges**:
-  - Optimizations might lead to situations where a streaming start (`SMSTART`) is inserted in a branch, but the corresponding stop (`SMSTOP`) is omitted. This can result in undefined behavior or program crashes.
-
-- **Unnecessary State Switching**:
-  - Calling non-SME code between SME intrinsic calls could result in unnecessary state switching, leading to performance losses. For example:
-    ```c#
-    // Streaming mode started
-    SME.method1();
-    // Streaming mode stopped
-    x = x + 1; // This could have been executed in streaming mode
-    // Streaming mode started
-    SME.method2();
-    // Streaming mode stopped
-    ```
+There were few more options explored and they are described in Appendix section, along with their pros and cons.
 
 ### Missing APIs in Streaming Mode
 
@@ -769,13 +609,13 @@ These naming conventions ensure clarity and consistency across the API surface. 
 - **Azure Cobalt / AWS Graviton**
   - Suitable for validating vector-agnostic support, which forms the foundation for SME validation.
 
-## Alternative approach - Using Kleidi
+## Kleidi: Alternative approach to .NET support
 
 Arm understands that SME is complicated and does not expect the average developer to understand all the concepts and edge cases required to write  SME code. Writing performant SME code is even harder. As such, Arm provides the [Kleidi libraries](https://www.arm.com/products/development-tools/embedded-and-software/kleidi-libraries), Kleidi AI and Kleidi CV (computer vision). These libraries are written in C and low level assembly, and are open source on Arm gitlab under the Apache 2 license. They aim to provide provide the most performant versions of common AI and CV routines on Arm hardware, automatically utilising SME when it is available.
 
 A lot of functions in Kleidi CV are simply standard SVE routines running in streaming mode to take care of the extra vector length.
 
-One option would be to wrap Kleidi in a C# wrapper and provide this as an external package on NuGet. It would require regular maintainence, however it may be possible to mostly automate this. To be feasible this would need buy in from both the Arm Kleidi team and the Microsoft CoreCLR team, and an agreement on who owns/maintains the wrapper.
+One option would be to wrap Kleidi in a C# wrapper and provide this as an external package on NuGet. It would require regular maintainence, however it may be possible to mostly automate this.
 
 Pros:
 - No need for any compiler changes or any large scale work items in CoreCLR.
@@ -783,7 +623,7 @@ Pros:
 - Expected good performance immediately.
 
 Cons:
-- C# libraries or any code within coreCLR cannot use Kleidi due to the dependency on an external library.
+- C# libraries or any code within coreCLR cannot use Kleidi due to the dependency on an external library. Although there are lot of [external libraries](https://github.com/dotnet/runtime/tree/main/src/native/external) in .NET runtime, taking dependencies for Kleidi should provide high value to offset the maintainence cost.
 - The library may be missing relevant use cases for C#
 - Long term maintenance - what happens if the library is abandoned or simply removed?
 
@@ -807,11 +647,177 @@ _Image courtesy: Arm documentation for 32B/256-bits SVL. Source: [Arm SME Overvi
 _Image credits: [Arm Community Blog](https://community.arm.com/arm-community-blogs/b/architectures-and-processors-blog/posts/arm-scalable-matrix-extension-introduction)_
 
 
-### TODO
+## TODO
 - More information about ZA storage, anything that runtime needs to handle about saving and restoring it.
 - ZA lazy scheme: https://arm-software.github.io/acle/main/acle.html#sme-instruction-intrinsics
 
-### Open Questions
+## Open Questions
 - What happens when `Vector<T>` is created in streaming mode? Can we pass it around to non-streaming mode and vice-versa? 18.1.7 restricts VL-dependent arguments to be passed that way, but how to restrict them in C#?
+
+## Appendix
+
+### Alternative options for Streaming state change
+
+Here, we state different approaches to provide functionality of streaming state changes, along with their pros and cons.
+
+#### 1. Expose StreamingON() and StreamingOFF()
+
+An alternative to using method attributes is exposing streaming state change instructions as intrinsics, such as `StreamingON()` and `StreamingOFF()`. This approach allows developers to explicitly control streaming mode transitions, while the code generator simply inserts the corresponding instructions at the specified locations.
+
+**Pros:**
+- **Fine-Grained Control**:
+   - Developers have precise control over where and when to enable or disable streaming mode in their code.
+
+- **Unchanged Workflow**:
+   - Unlike method attributes, this approach does not require developers to annotate methods, keeping their workflow and coding style consistent.
+
+- **Simplified Code Generator**:
+   - The code generator does not need to analyze or infer placement of streaming state change instructions. It only needs to ensure proper saving and restoring of registers before and after the intrinsics are invoked.
+
+
+**Cons:**
+- **High Risk of Developer Errors**:
+   - This approach gives developers more control than necessary, increasing the likelihood of mistakes:
+     - For example, a developer might call `StreamingON()` and inadvertently write code that generates NEON instructions, which are invalid in streaming mode. This could cause the program to crash.
+
+- **Forgotten Intrinsics**:
+   - Developers may forget to call `StreamingON()` or `StreamingOFF()`, leading to catastrophic failures. Unlike the method attributes approach, there is no safety mechanism in place to insert missing state change instructions automatically.
+   - Calling an SME API that is valid only in streaming mode without enabling streaming mode would result in an illegal instruction exception at runtime.
+
+- **Scattered Intrinsics**:
+   - Developers will need to manually scatter `StreamingON()` and `StreamingOFF()` calls throughout their code, making it harder to maintain. They must also remember the current mode at every point in their code to ensure counterpart APIs are called correctly.
+
+- **Undefined Behavior in Conditional Logic**:
+   - Conditional execution can lead to undefined behavior, and there is no straightforward way to flag such issues:
+     ```c#
+     StreamingOn();
+     ...
+     if (condition)
+     {
+       StreamingOff();
+     }
+     ...
+     StreamingAPI(); // Is this valid?
+     StreamingOff();
+     ```
+
+- **VL-Dependent Object Issues**:
+   - Accessing VL-dependent objects (e.g., vectors) across streaming state boundaries remains undefined:
+     ```c#
+     Vector<int> a = ... // NSVL
+     StreamingOn();
+     ... = a;        // Undefined behavior
+     StreamingOff();  
+     ```
+
+- **Complexity in Function Calls**:
+   - Calling functions while in streaming mode adds complexity for developers. They may not know which library routines are safe to call in streaming mode. For example:
+     - Is it safe to call `System.Console.WriteLine()` while in streaming mode?
+   - This lack of clarity increases the cognitive load on developers and risks incorrect usage.
+
+#### 2. RAII Style `using`
+
+Another option to expose the streaming state change would be to give it "Resource Acquisition is Initialization" (RAII) semantics. This can be achieved by introducing a placeholder class in `System.Runtime.Intrinsics.Arm.Sve` called `StreamingMode`. The lifetime of this class will determine when the streaming mode is entered and exited.
+
+```c#
+using (StreamingMode m = new StreamingMode())
+{
+  // streaming logic
+}
+```
+
+**Pros:**
+- **Simpler and Intuitive Usage**:
+  - This approach is simpler to use and provides a clear, natural way to express streaming logic within a scoped block.
+
+**Cons:**
+- **Difficulty in Calling Library Methods of Different Modes**:
+  - With this approach, calling .NET library methods that operate in a different streaming mode becomes challenging:
+
+    ```c#
+    void Foo() // non-streaming
+    {
+        using (StreamingMode m = new StreamingMode())
+        {
+          // streaming logic
+          Bar();  // non-streaming method
+          // streaming logic
+        }
+    }
+    ```
+
+- **Undefined Behavior for VL-Dependent Objects Across Scopes**:
+  - Accessing VL-dependent objects created outside the streaming scope will lead to undefined behavior:
+
+    ```c#
+    Vector<int> a = ...  // NSVL
+    using (StreamingMode m = new StreamingMode())
+    {
+      // streaming logic
+      .. = a; // undefined
+    }
+    ```
+
+- **Risk of Developer Oversights**:
+  - Developers may forget to add or remove the RAII block around the streaming code, leading to crashes when incompatible instructions are executed. Since such issues are syntactically and semantically valid, the C# compiler will not flag them as errors.
+
+- **Challenges in Extending for Automatic State Changes**:
+  - This approach could be extended by the code generator to behave like approach #1 (method attributes). For example:
+    - The code generator can detect if non-streaming code is invoked within a streaming scope and insert the required streaming state change instructions.
+    - However, it might be harder to handle the reverse case where developers forget to enclose streaming logic within a `StreamingMode` block.
+
+#### 3. Hybrid Approach
+
+The hybrid approach combines the use of method attributes (`[SME_Streaming]` and `[SME_Streaming_Compatible]`) with explicit streaming state controls such as `StreamingON()`/`StreamingOFF()` or the RAII-style `StreamingMode`. In this model:
+- SME APIs are annotated with attributes to indicate their streaming compatibility.
+- User-defined methods generally do not require attributes, and the compiler does not insert automatic mode changes for these methods.
+- Developers explicitly manage streaming states using `StreamingON()`/`StreamingOFF()` or the RAII-style `StreamingMode`.
+- At JIT compile time, if methods with attributes are invoked, the compiler can verify whether the current mode matches the method's requirements.
+
+**Pros:**
+- **Safe Error Detection**:
+   - The compiler can validate the SME state at JIT compile time and catch potential mismatches. This prevents invalid instructions from being executed at runtime, reducing the risk of crashes.
+
+- **Flexibility**:
+   - Developers have the flexibility to use explicit control (`StreamingON()`/`StreamingOFF()` or `StreamingMode`) while still benefiting from the safety provided by attributes for SME APIs.
+
+
+**Cons:**
+- **Confusion About Attribute Usage**:
+   - It can be unclear to developers when and where attributes should be applied, especially since user-defined methods generally do not require them. This ambiguity could lead to misuse or inconsistent application.
+
+- **Error Case Complexity**:
+   - Ensuring all possible error cases are correctly handled may be challenging. For instance, mismatches between explicit streaming state controls and attribute expectations could still occur in some scenarios.
+
+
+#### 4. Implicit (Code Generator Tracks SM State)
+
+Instead of relying on the developer to specify where the streaming mode should be changed, the code generator can take on the responsibility of tracking the streaming mode implicitly. It would be responsible for injecting appropriate streaming state change instructions at the correct locations. For instance, every time an SME intrinsic is called, the code generator can insert `SMSTART` before and `SMSTOP` after the call. It can also optimize by batching multiple state changes.
+
+**Pros:**
+- **No Developer Effort Required**:
+  - No method attributes, RAII blocks, or special intrinsics are needed. The logic is abstracted entirely away from the developer, allowing them to write streaming and non-streaming code without any changes to their workflow.
+
+**Cons:**
+- **Undefined Behavior for VL-Dependent Objects**:
+  - The problem of VL-dependent objects persists. For instance, if a VL-dependent object is created in non-streaming mode and accessed in streaming mode (or vice versa), the behavior is undefined. While the code generator could insert a `throw InvalidProgramException` at such points, identifying these cases reliably may be challenging.
+
+- **Risk of Incorrect State Injection**:
+  - Mistakes in injecting streaming state change instructions can lead to correctness issues or crashes, such as executing incompatible instructions in the wrong mode.
+
+- **Optimization Challenges**:
+  - Optimizations might lead to situations where a streaming start (`SMSTART`) is inserted in a branch, but the corresponding stop (`SMSTOP`) is omitted. This can result in undefined behavior or program crashes.
+
+- **Unnecessary State Switching**:
+  - Calling non-SME code between SME intrinsic calls could result in unnecessary state switching, leading to performance losses. For example:
+    ```c#
+    // Streaming mode started
+    SME.method1();
+    // Streaming mode stopped
+    x = x + 1; // This could have been executed in streaming mode
+    // Streaming mode started
+    SME.method2();
+    // Streaming mode stopped
+    ```
 
 -------
